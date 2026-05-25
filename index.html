@@ -629,6 +629,13 @@ jq -r &#x27;[&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&q
 
 echo &quot;Found $VM_COUNT Windows VM(s). VM list written to: $VM_CSV&quot;
 echo &quot;Collecting installed software via az vm run-command invoke...&quot;
+echo &quot;This can take 1-5 minutes per VM depending on Azure Run Command and VM agent response time.&quot;
+if [[ &quot;$VM_COUNT&quot; == &quot;1&quot; || &quot;$PARALLEL&quot; == &quot;1&quot; ]]; then
+  SHOW_VM_SPINNER=&quot;1&quot;
+else
+  SHOW_VM_SPINNER=&quot;&quot;
+  echo &quot;Parallel mode is enabled (--parallel $PARALLEL), so VM progress is shown as START/OK lines instead of one shared spinner.&quot;
+fi
 
 collect_vm() {
   local line=&quot;$1&quot;
@@ -653,7 +660,18 @@ collect_vm() {
   fi
 
   echo &quot;START $rg/$vm - invoking Azure Run Command to read installed software...&quot; &gt;&amp;2
-  if ! az vm run-command invoke \
+  if [[ &quot;${SHOW_VM_SPINNER:-}&quot; == &quot;1&quot; ]]; then
+    if ! run_with_spinner &quot;  Working on $rg/$vm with Azure Run Command&quot; &quot;$output_file&quot; &quot;$err_file&quot; az vm run-command invoke \
+        --subscription &quot;$sub&quot; \
+        --resource-group &quot;$rg&quot; \
+        --name &quot;$vm&quot; \
+        --command-id RunPowerShellScript \
+        --scripts &quot;$GUEST_PS&quot; \
+        -o json; then
+      echo &quot;ERROR $rg/$vm - run-command failed: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$err_file&quot;)&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+      return 0
+    fi
+  elif ! az vm run-command invoke \
       --subscription &quot;$sub&quot; \
       --resource-group &quot;$rg&quot; \
       --name &quot;$vm&quot; \
@@ -725,7 +743,8 @@ else:
   echo &quot;OK $rg/$vm&quot;
 }
 export -f collect_vm
-export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL
+export -f run_with_spinner
+export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL SHOW_VM_SPINNER
 
 # Run collection with bounded parallelism.
 if command -v xargs &gt;/dev/null 2&gt;&amp;1; then
