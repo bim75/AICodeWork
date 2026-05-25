@@ -625,7 +625,7 @@ if [[ &quot;$VM_COUNT&quot; == &quot;0&quot; ]]; then
 fi
 
 jq -r &#x27;[&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&quot;,&quot;Location&quot;,&quot;PowerState&quot;,&quot;Size&quot;,&quot;OSType&quot;,&quot;ComputerName&quot;,&quot;ResourceId&quot;],
-  (inputs | [.subscriptionId,.resourceGroup,.name,.location,.powerState,.size,.osType,.computerName,.id]) | @csv&#x27; &lt; &quot;$VM_JSON&quot; &gt; &quot;$VM_CSV&quot;
+  ((., inputs) | [.subscriptionId,.resourceGroup,.name,.location,.powerState,.size,.osType,.computerName,.id]) | @csv&#x27; &lt; &quot;$VM_JSON&quot; &gt; &quot;$VM_CSV&quot;
 
 echo &quot;Found $VM_COUNT Windows VM(s). VM list written to: $VM_CSV&quot;
 echo &quot;Collecting installed software via az vm run-command invoke...&quot;
@@ -757,13 +757,20 @@ fi
 # Build CSV. If no software rows were collected, still write headers.
 if [[ -s &quot;$SOFTWARE_JSONL&quot; ]]; then
   jq -r &#x27;[&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&quot;,&quot;AzureComputerName&quot;,&quot;GuestComputerName&quot;,&quot;Location&quot;,&quot;PowerState&quot;,&quot;VMSize&quot;,&quot;OSType&quot;,&quot;DisplayName&quot;,&quot;DisplayVersion&quot;,&quot;Publisher&quot;,&quot;InstallDate&quot;,&quot;InstallDateRaw&quot;,&quot;Architecture&quot;,&quot;InstallLocation&quot;,&quot;RegistryKey&quot;,&quot;RegistryPath&quot;,&quot;UninstallString&quot;,&quot;QuietUninstallString&quot;,&quot;ResourceId&quot;],
-    (inputs | [.SubscriptionId,.ResourceGroup,.VMName,.AzureComputerName,.GuestComputerName,.Location,.PowerState,.VMSize,.OSType,.DisplayName,.DisplayVersion,.Publisher,.InstallDate,.InstallDateRaw,.Architecture,.InstallLocation,.RegistryKey,.RegistryPath,.UninstallString,.QuietUninstallString,.ResourceId]) | @csv&#x27; &lt; &quot;$SOFTWARE_JSONL&quot; &gt; &quot;$SOFTWARE_CSV&quot;
+    ((., inputs) | [.SubscriptionId,.ResourceGroup,.VMName,.AzureComputerName,.GuestComputerName,.Location,.PowerState,.VMSize,.OSType,.DisplayName,.DisplayVersion,.Publisher,.InstallDate,.InstallDateRaw,.Architecture,.InstallLocation,.RegistryKey,.RegistryPath,.UninstallString,.QuietUninstallString,.ResourceId]) | @csv&#x27; &lt; &quot;$SOFTWARE_JSONL&quot; &gt; &quot;$SOFTWARE_CSV&quot;
 else
   printf &#x27;%s\n&#x27; &#x27;&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&quot;,&quot;AzureComputerName&quot;,&quot;GuestComputerName&quot;,&quot;Location&quot;,&quot;PowerState&quot;,&quot;VMSize&quot;,&quot;OSType&quot;,&quot;DisplayName&quot;,&quot;DisplayVersion&quot;,&quot;Publisher&quot;,&quot;InstallDate&quot;,&quot;InstallDateRaw&quot;,&quot;Architecture&quot;,&quot;InstallLocation&quot;,&quot;RegistryKey&quot;,&quot;RegistryPath&quot;,&quot;UninstallString&quot;,&quot;QuietUninstallString&quot;,&quot;ResourceId&quot;&#x27; &gt; &quot;$SOFTWARE_CSV&quot;
 fi
 
 TOTAL_SOFTWARE=$(if [[ -s &quot;$SOFTWARE_JSONL&quot; ]]; then wc -l &lt; &quot;$SOFTWARE_JSONL&quot; | tr -d &#x27; &#x27;; else echo 0; fi)
 ERROR_COUNT=$(if [[ -s &quot;$ERROR_LOG&quot; ]]; then wc -l &lt; &quot;$ERROR_LOG&quot; | tr -d &#x27; &#x27;; else echo 0; fi)
+
+if [[ &quot;$TOTAL_SOFTWARE&quot; == &quot;0&quot; ]]; then
+  echo &quot;&quot;
+  echo &quot;WARN: No installed software rows were collected.&quot;
+  echo &quot;Check the error log for the exact reason: $ERROR_LOG&quot;
+  echo &quot;Common causes: VM is not running, Azure VM Agent is unhealthy, Run Command permission is missing, or Run Command returned no registry output.&quot;
+fi
 
 BLOB_DESTINATION=&quot;&quot;
 if [[ -n &quot;$BLOB_ACCOUNT&quot; &amp;&amp; -n &quot;$BLOB_CONTAINER&quot; ]]; then
