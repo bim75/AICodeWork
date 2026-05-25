@@ -88,6 +88,8 @@ Exact login time, Windows only, active in last 30 days:
 
 - Name
 - DNSHostName
+- OperatingSystem
+- OperatingSystemVersion
 - Enabled
 - IsActive
 - BestLastLogon

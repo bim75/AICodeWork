@@ -115,6 +115,8 @@ foreach ($c in $computers) {
   $rows.Add([PSCustomObject]@{
     Name                         = [string]$c.Name
     DNSHostName                  = [string]$c.DNSHostName
+    OperatingSystem              = [string]$c.OperatingSystem
+    OperatingSystemVersion       = [string]$c.OperatingSystemVersion
     Enabled                      = [bool]$c.Enabled
     ActiveWithinDays             = $ActiveDays
     IsActive                     = [bool]$isActive
@@ -124,8 +126,6 @@ foreach ($c in $computers) {
     ReplicatedLastLogon          = if ($replicatedLastLogon) { $replicatedLastLogon.ToString('s') } else { $null }
     ExactLastLogon               = if ($exactLastLogon) { $exactLastLogon.ToString('s') } else { $null }
     ExactLastLogonDomainController = $exactLastLogonDc
-    OperatingSystem              = [string]$c.OperatingSystem
-    OperatingSystemVersion       = [string]$c.OperatingSystemVersion
     IPv4Address                  = [string]$c.IPv4Address
     PasswordLastSet              = if ($passwordLastSet) { $passwordLastSet.ToString('s') } else { $null }
     WhenCreated                  = if ($whenCreated) { $whenCreated.ToString('s') } else { $null }
