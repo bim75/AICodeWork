@@ -125,6 +125,10 @@ function Get-AdWindowsComputers {
 
 function Convert-AdComputerRow {
   param([object]$Computer)
+  $whenCreated = $null
+  $whenChanged = $null
+  if ($Computer.WhenCreated) { $whenCreated = $Computer.WhenCreated.ToString('s') }
+  if ($Computer.WhenChanged) { $whenChanged = $Computer.WhenChanged.ToString('s') }
   [PSCustomObject]@{
     Name                       = [string]$Computer.Name
     DNSHostName                = [string]$Computer.DNSHostName
@@ -134,8 +138,8 @@ function Convert-AdComputerRow {
     OperatingSystemServicePack = [string]$Computer.OperatingSystemServicePack
     IPv4Address                = [string]$Computer.IPv4Address
     LastLogonTimestamp         = Convert-FileTimeSafe $Computer.LastLogonTimestamp
-    WhenCreated                = if ($Computer.WhenCreated) { $Computer.WhenCreated.ToString('s') } else { $null }
-    WhenChanged                = if ($Computer.WhenChanged) { $Computer.WhenChanged.ToString('s') } else { $null }
+    WhenCreated                = $whenCreated
+    WhenChanged                = $whenChanged
     CanonicalName              = [string]$Computer.CanonicalName
     DistinguishedName          = [string]$Computer.DistinguishedName
     Description                = [string]$Computer.Description
@@ -207,17 +211,30 @@ $remoteScript = {
   $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
   $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue
   $cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+  $dnsHostName = $env:COMPUTERNAME
+  try {
+    $dnsHostName = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
+  } catch {
+    $dnsHostName = $env:COMPUTERNAME
+  }
+
+  $totalMemoryGB = $null
+  $lastBoot = $null
+  $installDate = $null
+  if ($cs.TotalPhysicalMemory) { $totalMemoryGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2) }
+  if ($os.LastBootUpTime) { $lastBoot = ([datetime]$os.LastBootUpTime).ToString('s') }
+  if ($os.InstallDate) { $installDate = ([datetime]$os.InstallDate).ToString('s') }
 
   $asset = [PSCustomObject]@{
     ComputerName       = $env:COMPUTERNAME
-    DNSHostName        = try { [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName } catch { $env:COMPUTERNAME }
+    DNSHostName        = $dnsHostName
     Reachable          = $true
     Manufacturer       = [string]$cs.Manufacturer
     Model              = [string]$cs.Model
     SystemType         = [string]$cs.SystemType
     Domain             = [string]$cs.Domain
     PartOfDomain       = [bool]$cs.PartOfDomain
-    TotalMemoryGB      = if ($cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory / 1GB, 2) } else { $null }
+    TotalMemoryGB      = $totalMemoryGB
     CpuName            = [string]$cpu.Name
     CpuCores           = [int]$cpu.NumberOfCores
     CpuLogical         = [int]$cpu.NumberOfLogicalProcessors
@@ -225,8 +242,8 @@ $remoteScript = {
     OSVersion          = [string]$os.Version
     OSBuild            = [string]$os.BuildNumber
     OSArchitecture     = [string]$os.OSArchitecture
-    LastBoot           = if ($os.LastBootUpTime) { ([datetime]$os.LastBootUpTime).ToString('s') } else { $null }
-    InstallDate        = if ($os.InstallDate) { ([datetime]$os.InstallDate).ToString('s') } else { $null }
+    LastBoot           = $lastBoot
+    InstallDate        = $installDate
     BiosSerial         = [string]$bios.SerialNumber
     BiosVersion        = [string]($bios.SMBIOSBIOSVersion)
   }
@@ -355,10 +372,14 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
         }) | Out-Null
       }
       foreach ($sw in @($r.Software)) {
+        $platformProvider = $null
+        if ($r.Asset) {
+          $platformProvider = Get-ProviderGuess -Manufacturer $r.Asset.Manufacturer -Model $r.Asset.Model -BiosSerial $r.Asset.BiosSerial
+        }
         $softwareRows.Add([PSCustomObject]@{
           ComputerName         = $target.Name
           DNSHostName          = $target.DNSHostName
-          PlatformProvider     = if ($r.Asset) { Get-ProviderGuess -Manufacturer $r.Asset.Manufacturer -Model $r.Asset.Model -BiosSerial $r.Asset.BiosSerial } else { $null }
+          PlatformProvider     = $platformProvider
           Source               = $sw.Source
           Architecture         = $sw.Architecture
           DisplayName          = $sw.DisplayName
