@@ -36,7 +36,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 Default: devices active in the last 90 days.
 
+For servers only, excluding desktop/client OS entries, use `-ServersOnly`.
+
 ```powershell
+.\ad-active-devices-logons.ps1 -ServersOnly -ActiveDays 90
+```
+
+Default without filters:
 .\ad-active-devices-logons.ps1
 ```
 
@@ -56,6 +62,12 @@ Use exact per-domain-controller last logon time:
 
 ```powershell
 .\ad-active-devices-logons.ps1 -ExactLastLogon
+```
+
+Exact login time, servers only, active in last 30 days:
+
+```powershell
+.\ad-active-devices-logons.ps1 -ServersOnly -ActiveDays 30 -ExactLastLogon
 ```
 
 Exact login time, Windows only, active in last 30 days:
@@ -93,14 +105,14 @@ Exact login time, Windows only, active in last 30 days:
 
 ## Recommended first run
 
-Start with this:
+Start with this for servers only:
 
 ```powershell
-.\ad-active-devices-logons.ps1 -WindowsOnly -ActiveDays 90
+.\ad-active-devices-logons.ps1 -ServersOnly -ActiveDays 90
 ```
 
 If the results look good but you need more exact timestamps, rerun:
 
 ```powershell
-.\ad-active-devices-logons.ps1 -WindowsOnly -ActiveDays 90 -ExactLastLogon
+.\ad-active-devices-logons.ps1 -ServersOnly -ActiveDays 90 -ExactLastLogon
 ```

@@ -19,6 +19,7 @@ param(
   [string]$SearchBase,
   [int]$ActiveDays = 90,
   [switch]$WindowsOnly,
+  [switch]$ServersOnly,
   [switch]$ExactLastLogon,
   [string]$OutputDir = ".\ad-active-devices-logons-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
 )
@@ -58,7 +59,12 @@ $properties = @(
   'IPv4Address','CanonicalName','DistinguishedName','Description','ManagedBy','PrimaryGroupID'
 )
 
-$filter = if ($WindowsOnly) { "OperatingSystem -like '*Windows*'" } else { '*' }
+$filter = '*'
+if ($ServersOnly) {
+  $filter = "OperatingSystem -like '*Server*'"
+} elseif ($WindowsOnly) {
+  $filter = "OperatingSystem -like '*Windows*'"
+}
 Write-Host "Querying AD computers. Filter: $filter"
 if ($SearchBase) {
   $computers = @(Get-ADComputer -Filter $filter -SearchBase $SearchBase -Properties $properties | Sort-Object Name)
@@ -149,6 +155,7 @@ $inactiveRows | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $inactiveCsv
   "Domain: $($domain.DNSRoot)",
   "SearchBase: $(if ($SearchBase) { $SearchBase } else { 'entire domain' })",
   "WindowsOnly: $WindowsOnly",
+  "ServersOnly: $ServersOnly",
   "ActiveDays: $ActiveDays",
   "ExactLastLogon: $ExactLastLogon",
   "Total AD computer objects: $($rows.Count)",
