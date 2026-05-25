@@ -378,15 +378,76 @@ function Read-UninstallRegistryView {
   }
 }
 
-# Read both 64-bit and 32-bit registry views explicitly. This avoids PowerShell provider
-# redirection issues under Azure Run Command and works even when the host PowerShell bitness varies.
+function Read-UninstallProviderPath {
+  param(
+    [string]$Path,
+    [string]$Architecture
+  )
+
+  try {
+    Get-ItemProperty -Path $Path -ErrorAction SilentlyContinue |
+      Where-Object { $_.DisplayName -and $_.DisplayName.Trim().Length -gt 0 } |
+      ForEach-Object {
+        $installDate = Convert-InstallDate $_.InstallDate
+        [PSCustomObject]@{
+          ComputerName         = $env:COMPUTERNAME
+          DisplayName          = [string]$_.DisplayName
+          DisplayVersion       = [string]$_.DisplayVersion
+          Publisher            = [string]$_.Publisher
+          InstallDateRaw       = $installDate.Raw
+          InstallDate          = $installDate.Iso
+          InstallLocation      = [string]$_.InstallLocation
+          UninstallString      = [string]$_.UninstallString
+          QuietUninstallString = [string]$_.QuietUninstallString
+          RegistryKey          = [string]$_.PSChildName
+          RegistryPath         = [string]$_.PSPath
+          Architecture         = $Architecture
+        }
+      }
+  } catch {
+    Write-Error "Failed reading provider path $Path : $($_.Exception.Message)"
+  }
+}
+
+function Read-ProgramsPackageProvider {
+  try {
+    Get-Package -ProviderName Programs -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -and $_.Name.Trim().Length -gt 0 } |
+      ForEach-Object {
+        [PSCustomObject]@{
+          ComputerName         = $env:COMPUTERNAME
+          DisplayName          = [string]$_.Name
+          DisplayVersion       = [string]$_.Version
+          Publisher            = [string]$_.ProviderName
+          InstallDateRaw       = $null
+          InstallDate          = $null
+          InstallLocation      = $null
+          UninstallString      = $null
+          QuietUninstallString = $null
+          RegistryKey          = [string]$_.FastPackageReference
+          RegistryPath         = 'Get-Package:Programs'
+          Architecture         = 'ProgramsProvider'
+        }
+      }
+  } catch {
+    Write-Error "Failed reading Get-Package Programs provider : $($_.Exception.Message)"
+  }
+}
+
+# Read multiple safe sources. No Win32_Product is used because it can trigger MSI repair actions.
+# 1. Explicit .NET registry views avoid PowerShell provider bitness/redirection issues.
+# 2. Provider paths are kept as a fallback because some older systems behave better there.
+# 3. Get-Package Programs provider is read-only and can find entries if registry reads are unusual.
 $items = @()
 try { $items += @(Read-UninstallRegistryView -View ([Microsoft.Win32.RegistryView]::Registry64) -Architecture 'x64') } catch { Write-Error $_ }
 try { $items += @(Read-UninstallRegistryView -View ([Microsoft.Win32.RegistryView]::Registry32) -Architecture 'x86') } catch { Write-Error $_ }
+try { $items += @(Read-UninstallProviderPath -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -Architecture 'x64-provider') } catch { Write-Error $_ }
+try { $items += @(Read-UninstallProviderPath -Path 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -Architecture 'x86-provider') } catch { Write-Error $_ }
+try { $items += @(Read-ProgramsPackageProvider) } catch { Write-Error $_ }
 
-$items = @($items | Where-Object { $_ -and $_.DisplayName } | Sort-Object DisplayName, DisplayVersion, Publisher, Architecture -Unique)
+$items = @($items | Where-Object { $_ -and $_.DisplayName } | Sort-Object DisplayName, DisplayVersion, Publisher -Unique)
 
-# Always emit a JSON array. If no rows are found, the Bash wrapper will log a warning.
+# Always emit a JSON array. If no rows are found, the Bash wrapper will log a warning with raw output paths.
 @($items) | ConvertTo-Json -Depth 4 -Compress
 EOF
 
@@ -514,9 +575,17 @@ collect_vm() {
     return 0
   fi
 
-  # Azure returns script stdout in value[].message. Extract the JSON array from that message.
-  local msg
-  msg=$(jq -r '[.value[]?.message] | join("\n")' "$output_file")
+  # Azure returns stdout/stderr as separate value[] entries. Prefer StdOut, but keep the full
+  # response file in tmp for diagnostics if Azure returns an unexpected shape.
+  local msg stderr_msg
+  msg=$(jq -r '[.value[]? | select((.code // "") | test("StdOut"; "i")) | .message] | join("\n")' "$output_file")
+  stderr_msg=$(jq -r '[.value[]? | select((.code // "") | test("StdErr"; "i")) | .message] | join("\n")' "$output_file")
+  if [[ -n "$stderr_msg" && "$stderr_msg" != "null" ]]; then
+    echo "WARN $rg/$vm - Run Command stderr: $(printf '%s' "$stderr_msg" | tr '\n' ' ' | cut -c1-500)" | tee -a "$ERROR_LOG" >&2
+  fi
+  if [[ -z "$msg" || "$msg" == "null" ]]; then
+    msg=$(jq -r '[.value[]?.message] | join("\n")' "$output_file")
+  fi
   if [[ -z "$msg" || "$msg" == "null" ]]; then
     echo "WARN $rg/$vm - no software output returned" | tee -a "$ERROR_LOG" >&2
     return 0
