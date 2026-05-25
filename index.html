@@ -36,14 +36,16 @@
   <header>
     <div class="hero">
       <div class="badge">READ-ONLY PHASE 1</div>
-      <h1>Azure Windows VM Software Inventory</h1>
-      <p>This guide walks you from zero to a CSV report of installed software on Azure Windows VMs using Azure Cloud Shell. It prompts you to choose a subscription, then choose all Windows VMs or one specific VM.</p>
+      <h1>Windows Asset & Software Inventory</h1>
+      <p>Use the AD-first inventory when your Windows machines are domain joined across VMware, Azure, and physical hardware. Use the Azure Cloud Shell inventory when you only need Azure VMs or do not have direct WinRM/network access.</p>
     </div>
   </header>
   <main>
     <section class="card toc">
       <h2 style="margin-top:0;border-top:0;padding-top:0">Quick links</h2>
-      <a href="#what-it-does">What this does</a>
+      <a href="AD-WINDOWS-ASSET-INVENTORY.md">AD-first inventory: VMware + Azure + physical Windows assets</a>
+      <a href="WINDOWS-SOFTWARE-INVENTORY.md">Azure Cloud Shell inventory directions</a>
+      <a href="#what-it-does">What the Azure Cloud Shell script does</a>
       <a href="#start">Start from Azure Cloud Shell</a>
       <a href="#run">Run the inventory</a>
       <a href="#outputs">Find/download the report files</a>
