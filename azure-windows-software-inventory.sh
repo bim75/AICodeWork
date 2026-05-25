@@ -443,25 +443,26 @@ collect_vm() {
     return 0
   fi
 
-  # Keep only the JSON array/object portion in case Run Command adds status text.
+  # Keep only the JSON array/object portion in case Run Command adds wrappers such as:
+  # [stdout]
+  # [...json...]
+  # [stderr]
+  # The extractor scans for the first valid JSON object/array instead of blindly using the first '['.
   printf '%s\n' "$msg" | python3 -c '
 import sys, json
 s=sys.stdin.read().strip()
-start=s.find("[")
-if start < 0: start=s.find("{")
-if start < 0:
-    raise SystemExit("no JSON payload found")
-payload=s[start:]
-# Trim after matching JSON by trying progressively smaller suffixes if needed.
-for end in range(len(payload), 0, -1):
+decoder=json.JSONDecoder()
+for i, ch in enumerate(s):
+    if ch not in "[{":
+        continue
     try:
-        obj=json.loads(payload[:end])
-        print(json.dumps(obj, separators=(",",":")))
-        break
+        obj, end = decoder.raw_decode(s[i:])
     except Exception:
         continue
-else:
-    raise SystemExit("could not parse JSON payload")
+    if isinstance(obj, (list, dict)):
+        print(json.dumps(obj, separators=(",",":")))
+        raise SystemExit(0)
+raise SystemExit("could not parse JSON payload")
 ' > "$software_file" 2>> "$err_file" || {
     echo "ERROR $rg/$vm - could not parse run-command JSON output: $(tr '\n' ' ' < "$err_file")" | tee -a "$ERROR_LOG" >&2
     return 0

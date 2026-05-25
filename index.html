@@ -690,25 +690,26 @@ collect_vm() {
     return 0
   fi
 
-  # Keep only the JSON array/object portion in case Run Command adds status text.
+  # Keep only the JSON array/object portion in case Run Command adds wrappers such as:
+  # [stdout]
+  # [...json...]
+  # [stderr]
+  # The extractor scans for the first valid JSON object/array instead of blindly using the first &#x27;[&#x27;.
   printf &#x27;%s\n&#x27; &quot;$msg&quot; | python3 -c &#x27;
 import sys, json
 s=sys.stdin.read().strip()
-start=s.find(&quot;[&quot;)
-if start &lt; 0: start=s.find(&quot;{&quot;)
-if start &lt; 0:
-    raise SystemExit(&quot;no JSON payload found&quot;)
-payload=s[start:]
-# Trim after matching JSON by trying progressively smaller suffixes if needed.
-for end in range(len(payload), 0, -1):
+decoder=json.JSONDecoder()
+for i, ch in enumerate(s):
+    if ch not in &quot;[{&quot;:
+        continue
     try:
-        obj=json.loads(payload[:end])
-        print(json.dumps(obj, separators=(&quot;,&quot;,&quot;:&quot;)))
-        break
+        obj, end = decoder.raw_decode(s[i:])
     except Exception:
         continue
-else:
-    raise SystemExit(&quot;could not parse JSON payload&quot;)
+    if isinstance(obj, (list, dict)):
+        print(json.dumps(obj, separators=(&quot;,&quot;,&quot;:&quot;)))
+        raise SystemExit(0)
+raise SystemExit(&quot;could not parse JSON payload&quot;)
 &#x27; &gt; &quot;$software_file&quot; 2&gt;&gt; &quot;$err_file&quot; || {
     echo &quot;ERROR $rg/$vm - could not parse run-command JSON output: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$err_file&quot;)&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
     return 0
