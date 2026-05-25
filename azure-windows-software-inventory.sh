@@ -525,6 +525,22 @@ if [[ "$TOTAL_SOFTWARE" == "0" ]]; then
   echo "Common causes: VM is not running, Azure VM Agent is unhealthy, Run Command permission is missing, or Run Command returned no registry output."
 fi
 
+REPORT_ZIP="$(pwd)/azure-windows-software-inventory-report-$TS.zip"
+echo ""
+echo "Creating one-click download zip in the current Cloud Shell folder..."
+if command -v zip >/dev/null 2>&1; then
+  rm -f "$REPORT_ZIP"
+  if (cd "$OUTPUT_ROOT" && zip -qr "$REPORT_ZIP" "$(basename "$OUT_DIR")"); then
+    echo "Report zip created: $REPORT_ZIP"
+  else
+    echo "WARN: Could not create report zip: $REPORT_ZIP" | tee -a "$ERROR_LOG" >&2
+    REPORT_ZIP=""
+  fi
+else
+  echo "WARN: zip command was not found, so no zip file was created." | tee -a "$ERROR_LOG" >&2
+  REPORT_ZIP=""
+fi
+
 BLOB_DESTINATION=""
 if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
   BLOB_DESTINATION="$BLOB_PREFIX/$TS"
@@ -563,6 +579,9 @@ echo "  VM inventory CSV:       $VM_CSV"
 echo "  Software inventory CSV: $SOFTWARE_CSV"
 echo "  Software JSONL:         $SOFTWARE_JSONL"
 echo "  Error log:              $ERROR_LOG"
+if [[ -n "$REPORT_ZIP" ]]; then
+  echo "  Download zip:           $REPORT_ZIP"
+fi
 if [[ -n "$BLOB_DESTINATION" ]]; then
   echo "  Blob upload path:       https://$BLOB_ACCOUNT.blob.core.windows.net/$BLOB_CONTAINER/$BLOB_DESTINATION/"
 fi

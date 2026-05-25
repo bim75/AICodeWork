@@ -133,10 +133,10 @@ echo "$latest_dir"</code></pre>
       <h3>Preview the software CSV</h3>
       <pre><button class="copy">Copy</button><code>latest_dir=$(ls -td ./inventory-output/*/ | head -1)
 head -n 20 "$latest_dir/software-inventory.csv"</code></pre>
-      <h3>Create a zip to download from Cloud Shell</h3>
-      <pre><button class="copy">Copy</button><code>latest_dir=$(ls -td ./inventory-output/*/ | head -1)
-zip -r azure-windows-software-inventory-report.zip "$latest_dir"</code></pre>
-      <p>Then use the Cloud Shell file menu to download <code>azure-windows-software-inventory-report.zip</code>.</p>
+      <h3>Download everything as one zip</h3>
+      <p>The script now automatically creates a zip file in your current Cloud Shell folder after each run.</p>
+      <pre><button class="copy">Copy</button><code>azure-windows-software-inventory-report-YYYYMMDDTHHMMSSZ.zip</code></pre>
+      <p>The exact zip filename is printed at the end of the run as <strong>Download zip</strong>. Use the Cloud Shell file menu to download that zip.</p>
     </section>
 
 
@@ -772,6 +772,22 @@ if [[ &quot;$TOTAL_SOFTWARE&quot; == &quot;0&quot; ]]; then
   echo &quot;Common causes: VM is not running, Azure VM Agent is unhealthy, Run Command permission is missing, or Run Command returned no registry output.&quot;
 fi
 
+REPORT_ZIP=&quot;$(pwd)/azure-windows-software-inventory-report-$TS.zip&quot;
+echo &quot;&quot;
+echo &quot;Creating one-click download zip in the current Cloud Shell folder...&quot;
+if command -v zip &gt;/dev/null 2&gt;&amp;1; then
+  rm -f &quot;$REPORT_ZIP&quot;
+  if (cd &quot;$OUTPUT_ROOT&quot; &amp;&amp; zip -qr &quot;$REPORT_ZIP&quot; &quot;$(basename &quot;$OUT_DIR&quot;)&quot;); then
+    echo &quot;Report zip created: $REPORT_ZIP&quot;
+  else
+    echo &quot;WARN: Could not create report zip: $REPORT_ZIP&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+    REPORT_ZIP=&quot;&quot;
+  fi
+else
+  echo &quot;WARN: zip command was not found, so no zip file was created.&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+  REPORT_ZIP=&quot;&quot;
+fi
+
 BLOB_DESTINATION=&quot;&quot;
 if [[ -n &quot;$BLOB_ACCOUNT&quot; &amp;&amp; -n &quot;$BLOB_CONTAINER&quot; ]]; then
   BLOB_DESTINATION=&quot;$BLOB_PREFIX/$TS&quot;
@@ -810,6 +826,9 @@ echo &quot;  VM inventory CSV:       $VM_CSV&quot;
 echo &quot;  Software inventory CSV: $SOFTWARE_CSV&quot;
 echo &quot;  Software JSONL:         $SOFTWARE_JSONL&quot;
 echo &quot;  Error log:              $ERROR_LOG&quot;
+if [[ -n &quot;$REPORT_ZIP&quot; ]]; then
+  echo &quot;  Download zip:           $REPORT_ZIP&quot;
+fi
 if [[ -n &quot;$BLOB_DESTINATION&quot; ]]; then
   echo &quot;  Blob upload path:       https://$BLOB_ACCOUNT.blob.core.windows.net/$BLOB_CONTAINER/$BLOB_DESTINATION/&quot;
 fi
