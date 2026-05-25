@@ -125,137 +125,169 @@ prompt_number() {
 choose_subscription_interactive() {
   local subs_json sub_count subs_table choice selected_id selected_name
 
-  echo "Discovering accessible Azure subscriptions and VM counts..."
-  local subs_file subs_err
-  subs_file="$TMP_DIR/az-account-list.json"
-  subs_err="$TMP_DIR/az-account-list.err"
-  if ! run_with_spinner "Querying Azure subscriptions" "$subs_file" "$subs_err" az account list --all -o json; then
-    echo "ERROR: Could not list Azure subscriptions: $(tr '\n' ' ' < "$subs_err")" >&2
-    exit 1
-  fi
-  subs_json="$(cat "$subs_file")"
-  sub_count="$(jq 'length' <<<"$subs_json")"
+  while true; do
+    echo "Discovering accessible Azure subscriptions and VM counts..."
+    local subs_file subs_err
+    subs_file="$TMP_DIR/az-account-list.json"
+    subs_err="$TMP_DIR/az-account-list.err"
+    if ! run_with_spinner "Querying Azure subscriptions" "$subs_file" "$subs_err" az account list --all -o json; then
+      echo "ERROR: Could not list Azure subscriptions: $(tr '\n' ' ' < "$subs_err")" >&2
+      exit 1
+    fi
+    subs_json="$(cat "$subs_file")"
+    sub_count="$(jq 'length' <<<"$subs_json")"
 
-  if [[ "$sub_count" == "0" ]]; then
-    echo "ERROR: No Azure subscriptions are available to this account." >&2
-    exit 1
-  fi
-
-  subs_table="$TMP_DIR/subscriptions.jsonl"
-  : > "$subs_table"
-
-  for i in $(seq 0 $((sub_count - 1))); do
-    local id name state total_vms windows_vms
-    id="$(jq -r ".[$i].id" <<<"$subs_json")"
-    name="$(jq -r ".[$i].name" <<<"$subs_json")"
-    state="$(jq -r ".[$i].state" <<<"$subs_json")"
-
-    total_vms="ERR"
-    windows_vms="ERR"
-    echo "Checking subscription $((i + 1))/$sub_count: $name"
-    if az account set --subscription "$id" >/dev/null 2>&1; then
-      local vm_summary vm_summary_file vm_summary_err
-      vm_summary_file="$TMP_DIR/subscription-${i}-vm-summary.tsv"
-      vm_summary_err="$TMP_DIR/subscription-${i}-vm-summary.err"
-      if run_with_spinner "  Querying VM counts for $name" "$vm_summary_file" "$vm_summary_err" bash -c 'az vm list -d -o json | jq -r '\''[length, ([.[] | select((.storageProfile.osDisk.osType // "") == "Windows")] | length)] | @tsv'\'''; then
-        vm_summary="$(cat "$vm_summary_file")"
-        total_vms="$(awk '{print $1}' <<<"$vm_summary")"
-        windows_vms="$(awk '{print $2}' <<<"$vm_summary")"
-      else
-        echo "  WARN: VM count query failed for $name: $(tr '\n' ' ' < "$vm_summary_err")" >&2
-      fi
+    if [[ "$sub_count" == "0" ]]; then
+      echo "ERROR: No Azure subscriptions are available to this account." >&2
+      exit 1
     fi
 
-    jq -n -c \
-      --arg id "$id" \
-      --arg name "$name" \
-      --arg state "$state" \
-      --arg totalVms "$total_vms" \
-      --arg windowsVms "$windows_vms" \
-      '{id:$id,name:$name,state:$state,totalVms:$totalVms,windowsVms:$windowsVms}' >> "$subs_table"
+    subs_table="$TMP_DIR/subscriptions.jsonl"
+    : > "$subs_table"
+
+    for i in $(seq 0 $((sub_count - 1))); do
+      local id name state total_vms windows_vms
+      id="$(jq -r ".[$i].id" <<<"$subs_json")"
+      name="$(jq -r ".[$i].name" <<<"$subs_json")"
+      state="$(jq -r ".[$i].state" <<<"$subs_json")"
+
+      total_vms="ERR"
+      windows_vms="ERR"
+      echo "Checking subscription $((i + 1))/$sub_count: $name"
+      if az account set --subscription "$id" >/dev/null 2>&1; then
+        local vm_summary vm_summary_file vm_summary_err
+        vm_summary_file="$TMP_DIR/subscription-${i}-vm-summary.tsv"
+        vm_summary_err="$TMP_DIR/subscription-${i}-vm-summary.err"
+        if run_with_spinner "  Querying VM counts for $name" "$vm_summary_file" "$vm_summary_err" bash -c 'az vm list -d -o json | jq -r '\''[length, ([.[] | select((.storageProfile.osDisk.osType // "") == "Windows")] | length)] | @tsv'\'''; then
+          vm_summary="$(cat "$vm_summary_file")"
+          total_vms="$(awk '{print $1}' <<<"$vm_summary")"
+          windows_vms="$(awk '{print $2}' <<<"$vm_summary")"
+        else
+          echo "  WARN: VM count query failed for $name: $(tr '\n' ' ' < "$vm_summary_err")" >&2
+        fi
+      fi
+
+      jq -n -c \
+        --arg id "$id" \
+        --arg name "$name" \
+        --arg state "$state" \
+        --arg totalVms "$total_vms" \
+        --arg windowsVms "$windows_vms" \
+        '{id:$id,name:$name,state:$state,totalVms:$totalVms,windowsVms:$windowsVms}' >> "$subs_table"
+    done
+
+    echo ""
+    echo "Available subscriptions:"
+    printf '  %3s  %-42s  %-12s  %9s  %11s\n' "#" "Subscription" "State" "All VMs" "Windows VMs"
+    printf '  %3s  %-42s  %-12s  %9s  %11s\n' "---" "------------------------------------------" "------------" "---------" "-----------"
+
+    local idx=1
+    while IFS= read -r line; do
+      local name state total_vms windows_vms
+      name="$(jq -r '.name' <<<"$line")"
+      state="$(jq -r '.state' <<<"$line")"
+      total_vms="$(jq -r '.totalVms' <<<"$line")"
+      windows_vms="$(jq -r '.windowsVms' <<<"$line")"
+      printf '  %3d  %-42.42s  %-12.12s  %9s  %11s\n' "$idx" "$name" "$state" "$total_vms" "$windows_vms"
+      idx=$((idx + 1))
+    done < "$subs_table"
+
+    echo ""
+    echo "Enter a subscription number, R to refresh, or Q to quit."
+    read -r -p "Choose subscription: " choice
+    case "${choice^^}" in
+      Q) echo "Exiting."; exit 0 ;;
+      R) echo "Refreshing subscription list..."; continue ;;
+    esac
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= sub_count )); then
+      selected_id="$(sed -n "${choice}p" "$subs_table" | jq -r '.id')"
+      selected_name="$(sed -n "${choice}p" "$subs_table" | jq -r '.name')"
+      echo "Selected subscription: $selected_name ($selected_id)"
+      SUBSCRIPTION="$selected_id"
+      az account set --subscription "$SUBSCRIPTION"
+      return 0
+    fi
+    echo "Please enter a number from 1 to $sub_count, R, or Q." >&2
   done
-
-  echo ""
-  echo "Available subscriptions:"
-  printf '  %3s  %-42s  %-12s  %9s  %11s\n' "#" "Subscription" "State" "All VMs" "Windows VMs"
-  printf '  %3s  %-42s  %-12s  %9s  %11s\n' "---" "------------------------------------------" "------------" "---------" "-----------"
-
-  local idx=1
-  while IFS= read -r line; do
-    local name state total_vms windows_vms
-    name="$(jq -r '.name' <<<"$line")"
-    state="$(jq -r '.state' <<<"$line")"
-    total_vms="$(jq -r '.totalVms' <<<"$line")"
-    windows_vms="$(jq -r '.windowsVms' <<<"$line")"
-    printf '  %3d  %-42.42s  %-12.12s  %9s  %11s\n' "$idx" "$name" "$state" "$total_vms" "$windows_vms"
-    idx=$((idx + 1))
-  done < "$subs_table"
-
-  echo ""
-  choice="$(prompt_number "Choose subscription number: " 1 "$sub_count")"
-  selected_id="$(sed -n "${choice}p" "$subs_table" | jq -r '.id')"
-  selected_name="$(sed -n "${choice}p" "$subs_table" | jq -r '.name')"
-  echo "Selected subscription: $selected_name ($selected_id)"
-  SUBSCRIPTION="$selected_id"
-  az account set --subscription "$SUBSCRIPTION"
 }
 
 choose_vm_interactive() {
   local all_vm_json windows_count vm_table choice selected
 
-  echo "Discovering Windows VMs in selected subscription..."
-  local all_vm_file all_vm_err
-  all_vm_file="$TMP_DIR/selected-subscription-vms.json"
-  all_vm_err="$TMP_DIR/selected-subscription-vms.err"
-  if ! run_with_spinner "Querying Windows VM list" "$all_vm_file" "$all_vm_err" az vm list -d -o json; then
-    echo "ERROR: Could not list VMs in selected subscription: $(tr '\n' ' ' < "$all_vm_err")" >&2
-    exit 1
-  fi
-  all_vm_json="$(cat "$all_vm_file")"
-  windows_count="$(jq '[.[] | select((.storageProfile.osDisk.osType // "") == "Windows")] | length' <<<"$all_vm_json")"
+  while true; do
+    echo "Discovering Windows VMs in selected subscription..."
+    local all_vm_file all_vm_err
+    all_vm_file="$TMP_DIR/selected-subscription-vms.json"
+    all_vm_err="$TMP_DIR/selected-subscription-vms.err"
+    if ! run_with_spinner "Querying Windows VM list" "$all_vm_file" "$all_vm_err" az vm list -d -o json; then
+      echo "ERROR: Could not list VMs in selected subscription: $(tr '\n' ' ' < "$all_vm_err")" >&2
+      exit 1
+    fi
+    all_vm_json="$(cat "$all_vm_file")"
+    windows_count="$(jq '[.[] | select((.storageProfile.osDisk.osType // "") == "Windows")] | length' <<<"$all_vm_json")"
 
-  if [[ "$windows_count" == "0" ]]; then
-    echo "No Windows VMs found in selected subscription."
-    exit 0
-  fi
+    if [[ "$windows_count" == "0" ]]; then
+      echo "No Windows VMs found in selected subscription."
+      echo "Enter B to go back to subscription selection, R to refresh, or Q to quit."
+      read -r -p "Choice: " choice
+      case "${choice^^}" in
+        B) return 10 ;;
+        R) continue ;;
+        Q) echo "Exiting."; exit 0 ;;
+      esac
+      continue
+    fi
 
-  vm_table="$TMP_DIR/interactive-windows-vms.jsonl"
-  jq -c "$VM_QUERY" <<<"$all_vm_json" > "$vm_table"
+    vm_table="$TMP_DIR/interactive-windows-vms.jsonl"
+    jq -c "$VM_QUERY" <<<"$all_vm_json" > "$vm_table"
 
-  echo ""
-  echo "Windows VMs:"
-  printf '  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n' "#" "VM Name" "Resource Group" "Power State" "Size" "Location"
-  printf '  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n' "---" "--------------------------------" "----------------------------" "----------------" "--------------" "------------"
+    echo ""
+    echo "Windows VMs:"
+    printf '  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n' "#" "VM Name" "Resource Group" "Power State" "Size" "Location"
+    printf '  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n' "---" "--------------------------------" "----------------------------" "----------------" "--------------" "------------"
 
-  local idx=1
-  while IFS= read -r line; do
-    local name rg power size loc
-    name="$(jq -r '.name' <<<"$line")"
-    rg="$(jq -r '.resourceGroup' <<<"$line")"
-    power="$(jq -r '.powerState' <<<"$line")"
-    size="$(jq -r '.size' <<<"$line")"
-    loc="$(jq -r '.location' <<<"$line")"
-    printf '  %3d  %-32.32s  %-28.28s  %-16.16s  %-14.14s  %-12.12s\n' "$idx" "$name" "$rg" "$power" "$size" "$loc"
-    idx=$((idx + 1))
-  done < "$vm_table"
+    local idx=1
+    while IFS= read -r line; do
+      local name rg power size loc
+      name="$(jq -r '.name' <<<"$line")"
+      rg="$(jq -r '.resourceGroup' <<<"$line")"
+      power="$(jq -r '.powerState' <<<"$line")"
+      size="$(jq -r '.size' <<<"$line")"
+      loc="$(jq -r '.location' <<<"$line")"
+      printf '  %3d  %-32.32s  %-28.28s  %-16.16s  %-14.14s  %-12.12s\n' "$idx" "$name" "$rg" "$power" "$size" "$loc"
+      idx=$((idx + 1))
+    done < "$vm_table"
 
-  echo ""
-  echo "Choose what to inventory:"
-  echo "  0 = all Windows VMs listed above"
-  echo "  1-$windows_count = one specific VM"
-  choice="$(prompt_number "Choose VM number, or 0 for all: " 0 "$windows_count")"
+    echo ""
+    echo "Choose what to inventory:"
+    echo "  0 = all Windows VMs listed above"
+    echo "  1-$windows_count = one specific VM"
+    echo "  B = go back to subscription selection"
+    echo "  R = refresh VM list"
+    echo "  Q = quit"
+    read -r -p "Choose VM number, 0, B, R, or Q: " choice
+    case "${choice^^}" in
+      B) return 10 ;;
+      R) echo "Refreshing VM list..."; continue ;;
+      Q) echo "Exiting."; exit 0 ;;
+    esac
 
-  if [[ "$choice" == "0" ]]; then
-    echo "Selected: all Windows VMs"
-    ALL_VMS="1"
-    FILTER_VM_NAME=""
-    FILTER_RG=""
-  else
-    selected="$(sed -n "${choice}p" "$vm_table")"
-    FILTER_VM_NAME="$(jq -r '.name' <<<"$selected")"
-    FILTER_RG="$(jq -r '.resourceGroup' <<<"$selected")"
-    echo "Selected VM: $FILTER_RG/$FILTER_VM_NAME"
-  fi
+    if [[ "$choice" == "0" ]]; then
+      echo "Selected: all Windows VMs"
+      ALL_VMS="1"
+      FILTER_VM_NAME=""
+      FILTER_RG=""
+      return 0
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= windows_count )); then
+      selected="$(sed -n "${choice}p" "$vm_table")"
+      FILTER_VM_NAME="$(jq -r '.name' <<<"$selected")"
+      FILTER_RG="$(jq -r '.resourceGroup' <<<"$selected")"
+      ALL_VMS=""
+      echo "Selected VM: $FILTER_RG/$FILTER_VM_NAME"
+      return 0
+    fi
+    echo "Please enter 0-$windows_count, B, R, or Q." >&2
+  done
 }
 
 # For interactive selection we need TMP_DIR before the normal output directory is announced.
@@ -265,9 +297,7 @@ mkdir -p "$OUT_DIR"
 TMP_DIR="$OUT_DIR/tmp"
 mkdir -p "$TMP_DIR"
 
-if [[ -z "$SUBSCRIPTION" && -z "$NON_INTERACTIVE" ]]; then
-  choose_subscription_interactive
-elif [[ -n "$SUBSCRIPTION" ]]; then
+if [[ -n "$SUBSCRIPTION" ]]; then
   az account set --subscription "$SUBSCRIPTION"
 fi
 
@@ -343,7 +373,24 @@ VM_QUERY='.[] | select((.storageProfile.osDisk.osType // "") == "Windows") | {
 }'
 
 if [[ -z "$FILTER_VM_NAME" && -z "$FILTER_RG" && -z "$ALL_VMS" && -z "$NON_INTERACTIVE" ]]; then
-  choose_vm_interactive
+  while true; do
+    if [[ -z "$SUBSCRIPTION" ]]; then
+      choose_subscription_interactive
+    fi
+    if choose_vm_interactive; then
+      break
+    else
+      rc=$?
+      if [[ "$rc" == "10" ]]; then
+        SUBSCRIPTION=""
+        FILTER_VM_NAME=""
+        FILTER_RG=""
+        ALL_VMS=""
+        continue
+      fi
+      exit "$rc"
+    fi
+  done
 fi
 
 VM_JSON="$TMP_DIR/windows-vms.jsonl"
@@ -508,16 +555,209 @@ else
   while IFS= read -r line; do collect_vm "$line"; done < "$VM_JSON"
 fi
 
-# Build CSV. If no software rows were collected, still write headers.
-if [[ -s "$SOFTWARE_JSONL" ]]; then
-  jq -r '["SubscriptionId","ResourceGroup","VMName","AzureComputerName","GuestComputerName","Location","PowerState","VMSize","OSType","DisplayName","DisplayVersion","Publisher","InstallDate","InstallDateRaw","Architecture","InstallLocation","RegistryKey","RegistryPath","UninstallString","QuietUninstallString","ResourceId"],
-    ((., inputs) | [.SubscriptionId,.ResourceGroup,.VMName,.AzureComputerName,.GuestComputerName,.Location,.PowerState,.VMSize,.OSType,.DisplayName,.DisplayVersion,.Publisher,.InstallDate,.InstallDateRaw,.Architecture,.InstallLocation,.RegistryKey,.RegistryPath,.UninstallString,.QuietUninstallString,.ResourceId]) | @csv' < "$SOFTWARE_JSONL" > "$SOFTWARE_CSV"
-else
-  printf '%s\n' '"SubscriptionId","ResourceGroup","VMName","AzureComputerName","GuestComputerName","Location","PowerState","VMSize","OSType","DisplayName","DisplayVersion","Publisher","InstallDate","InstallDateRaw","Architecture","InstallLocation","RegistryKey","RegistryPath","UninstallString","QuietUninstallString","ResourceId"' > "$SOFTWARE_CSV"
-fi
+build_report_files() {
+  # Build CSV. If no software rows were collected, still write headers.
+  if [[ -s "$SOFTWARE_JSONL" ]]; then
+    jq -r '["SubscriptionId","ResourceGroup","VMName","AzureComputerName","GuestComputerName","Location","PowerState","VMSize","OSType","DisplayName","DisplayVersion","Publisher","InstallDate","InstallDateRaw","Architecture","InstallLocation","RegistryKey","RegistryPath","UninstallString","QuietUninstallString","ResourceId"],
+      ((., inputs) | [.SubscriptionId,.ResourceGroup,.VMName,.AzureComputerName,.GuestComputerName,.Location,.PowerState,.VMSize,.OSType,.DisplayName,.DisplayVersion,.Publisher,.InstallDate,.InstallDateRaw,.Architecture,.InstallLocation,.RegistryKey,.RegistryPath,.UninstallString,.QuietUninstallString,.ResourceId]) | @csv' < "$SOFTWARE_JSONL" > "$SOFTWARE_CSV"
+  else
+    printf '%s\n' '"SubscriptionId","ResourceGroup","VMName","AzureComputerName","GuestComputerName","Location","PowerState","VMSize","OSType","DisplayName","DisplayVersion","Publisher","InstallDate","InstallDateRaw","Architecture","InstallLocation","RegistryKey","RegistryPath","UninstallString","QuietUninstallString","ResourceId"' > "$SOFTWARE_CSV"
+  fi
 
-TOTAL_SOFTWARE=$(if [[ -s "$SOFTWARE_JSONL" ]]; then wc -l < "$SOFTWARE_JSONL" | tr -d ' '; else echo 0; fi)
-ERROR_COUNT=$(if [[ -s "$ERROR_LOG" ]]; then wc -l < "$ERROR_LOG" | tr -d ' '; else echo 0; fi)
+  VM_COUNT=$(wc -l < "$VM_JSON" | tr -d ' ')
+  TOTAL_SOFTWARE=$(if [[ -s "$SOFTWARE_JSONL" ]]; then wc -l < "$SOFTWARE_JSONL" | tr -d ' '; else echo 0; fi)
+  ERROR_COUNT=$(if [[ -s "$ERROR_LOG" ]]; then wc -l < "$ERROR_LOG" | tr -d ' '; else echo 0; fi)
+}
+
+create_report_zip() {
+  REPORT_ZIP="$(pwd)/azure-windows-software-inventory-report-$TS.zip"
+  echo ""
+  echo "Creating one-click download zip in the current Cloud Shell folder..."
+  if command -v zip >/dev/null 2>&1; then
+    rm -f "$REPORT_ZIP"
+    if (cd "$OUTPUT_ROOT" && zip -qr "$REPORT_ZIP" "$(basename "$OUT_DIR")"); then
+      echo "Report zip created: $REPORT_ZIP"
+    else
+      echo "WARN: Could not create report zip: $REPORT_ZIP" | tee -a "$ERROR_LOG" >&2
+      REPORT_ZIP=""
+    fi
+  else
+    echo "WARN: zip command was not found, so no zip file was created." | tee -a "$ERROR_LOG" >&2
+    REPORT_ZIP=""
+  fi
+}
+
+print_summary() {
+  echo ""
+  echo "Inventory complete."
+  echo "Windows VM count: $VM_COUNT"
+  echo "Software rows: $TOTAL_SOFTWARE"
+  echo "Warnings/errors: $ERROR_COUNT"
+  echo "Files:"
+  echo "  VM inventory CSV:       $VM_CSV"
+  echo "  Software inventory CSV: $SOFTWARE_CSV"
+  echo "  Software JSONL:         $SOFTWARE_JSONL"
+  echo "  Error log:              $ERROR_LOG"
+  if [[ -n "${REPORT_ZIP:-}" ]]; then
+    echo "  Download zip:           $REPORT_ZIP"
+  fi
+  if [[ -n "${BLOB_DESTINATION:-}" ]]; then
+    echo "  Blob upload path:       https://$BLOB_ACCOUNT.blob.core.windows.net/$BLOB_CONTAINER/$BLOB_DESTINATION/"
+  fi
+}
+
+show_vm_list() {
+  echo ""
+  echo "Windows VMs in this report:"
+  if [[ -s "$VM_JSON" ]]; then
+    jq -r '["VMName","ResourceGroup","PowerState","Size","Location"], ((., inputs) | [.name,.resourceGroup,.powerState,.size,.location]) | @tsv' < "$VM_JSON" | column -t -s $'\t'
+  else
+    echo "No VM rows found."
+  fi
+}
+
+show_top_software() {
+  echo ""
+  echo "Top installed software titles in this report:"
+  if [[ -s "$SOFTWARE_JSONL" ]]; then
+    jq -r '.DisplayName // empty' "$SOFTWARE_JSONL" | sort | uniq -c | sort -nr | head -25
+  else
+    echo "No software rows found."
+  fi
+}
+
+show_software_by_vm() {
+  echo ""
+  if [[ ! -s "$SOFTWARE_JSONL" ]]; then
+    echo "No software rows found."
+    return 0
+  fi
+  echo "Software counts by VM:"
+  jq -r '[.ResourceGroup,.VMName] | @tsv' "$SOFTWARE_JSONL" | sort | uniq -c | sort -nr | head -50
+}
+
+search_software() {
+  local term
+  echo ""
+  if [[ ! -s "$SOFTWARE_JSONL" ]]; then
+    echo "No software rows found."
+    return 0
+  fi
+  read -r -p "Search software name/publisher/version: " term
+  if [[ -z "$term" ]]; then
+    echo "Search cancelled."
+    return 0
+  fi
+  jq -r --arg term "$term" '
+    select(((.DisplayName // "") + " " + (.Publisher // "") + " " + (.DisplayVersion // "")) | ascii_downcase | contains($term | ascii_downcase)) |
+    [.VMName,.DisplayName,.DisplayVersion,.Publisher,.InstallDate] | @tsv' "$SOFTWARE_JSONL" | column -t -s $'\t' | head -100
+}
+
+show_errors() {
+  echo ""
+  if [[ -s "$ERROR_LOG" ]]; then
+    echo "Errors/warnings from this run:"
+    tail -100 "$ERROR_LOG"
+  else
+    echo "No errors or warnings recorded."
+  fi
+}
+
+collect_another_vm_from_cache() {
+  local vm_table choice count selected rg vm tmp_jsonl tmp_vmjson
+  vm_table="$TMP_DIR/interactive-windows-vms.jsonl"
+  if [[ ! -s "$vm_table" ]]; then
+    echo ""
+    echo "No cached full VM list is available for this run. Use option 9 to start a fresh selection."
+    return 0
+  fi
+  count=$(wc -l < "$vm_table" | tr -d ' ')
+  echo ""
+  echo "Cached Windows VMs from the selected subscription:"
+  printf '  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n' "#" "VM Name" "Resource Group" "Power State" "Size" "Location"
+  local idx=1
+  while IFS= read -r line; do
+    printf '  %3d  %-32.32s  %-28.28s  %-16.16s  %-14.14s  %-12.12s\n' "$idx" \
+      "$(jq -r '.name' <<<"$line")" \
+      "$(jq -r '.resourceGroup' <<<"$line")" \
+      "$(jq -r '.powerState' <<<"$line")" \
+      "$(jq -r '.size' <<<"$line")" \
+      "$(jq -r '.location' <<<"$line")"
+    idx=$((idx + 1))
+  done < "$vm_table"
+
+  echo ""
+  echo "Choose a VM number to inventory, or B to go back to the review menu."
+  read -r -p "Choice: " choice
+  case "${choice^^}" in
+    B|"") return 0 ;;
+  esac
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > count )); then
+    echo "Invalid VM choice."
+    return 0
+  fi
+
+  selected="$(sed -n "${choice}p" "$vm_table")"
+  rg="$(jq -r '.resourceGroup' <<<"$selected")"
+  vm="$(jq -r '.name' <<<"$selected")"
+  echo ""
+  echo "Inventorying $rg/$vm using the already-loaded VM list..."
+  echo "If this VM was already in the report, its old rows will be replaced."
+
+  tmp_jsonl="$TMP_DIR/software-jsonl-filtered.tmp"
+  if [[ -s "$SOFTWARE_JSONL" ]]; then
+    jq -c --arg rg "$rg" --arg vm "$vm" 'select(.ResourceGroup != $rg or .VMName != $vm)' "$SOFTWARE_JSONL" > "$tmp_jsonl"
+    mv "$tmp_jsonl" "$SOFTWARE_JSONL"
+  fi
+
+  tmp_vmjson="$TMP_DIR/windows-vms-filtered.tmp"
+  if [[ -s "$VM_JSON" ]]; then
+    jq -c --arg rg "$rg" --arg vm "$vm" 'select(.resourceGroup != $rg or .name != $vm)' "$VM_JSON" > "$tmp_vmjson"
+    mv "$tmp_vmjson" "$VM_JSON"
+  fi
+  printf '%s\n' "$selected" >> "$VM_JSON"
+
+  SHOW_VM_SPINNER="1"
+  collect_vm "$selected"
+  build_report_files
+  create_report_zip
+  print_summary
+}
+
+post_run_menu() {
+  if [[ -n "$NON_INTERACTIVE" ]]; then
+    return 0
+  fi
+
+  while true; do
+    echo ""
+    echo "Post-run review menu:"
+    echo "  1 = show report summary"
+    echo "  2 = show Windows VMs in this report"
+    echo "  3 = show top installed software titles"
+    echo "  4 = show software counts by VM"
+    echo "  5 = search software"
+    echo "  6 = show errors/warnings"
+    echo "  7 = recreate download zip"
+    echo "  8 = inventory another VM from the already-loaded VM list"
+    echo "  9 = exit and rerun script for a fresh subscription/VM selection"
+    read -r -p "Choose option: " choice
+    case "$choice" in
+      1) print_summary ;;
+      2) show_vm_list ;;
+      3) show_top_software ;;
+      4) show_software_by_vm ;;
+      5) search_software ;;
+      6) show_errors ;;
+      7) build_report_files; create_report_zip; print_summary ;;
+      8) collect_another_vm_from_cache ;;
+      9|Q|q) break ;;
+      *) echo "Please choose 1-9." ;;
+    esac
+  done
+}
+
+build_report_files
 
 if [[ "$TOTAL_SOFTWARE" == "0" ]]; then
   echo ""
@@ -526,21 +766,7 @@ if [[ "$TOTAL_SOFTWARE" == "0" ]]; then
   echo "Common causes: VM is not running, Azure VM Agent is unhealthy, Run Command permission is missing, or Run Command returned no registry output."
 fi
 
-REPORT_ZIP="$(pwd)/azure-windows-software-inventory-report-$TS.zip"
-echo ""
-echo "Creating one-click download zip in the current Cloud Shell folder..."
-if command -v zip >/dev/null 2>&1; then
-  rm -f "$REPORT_ZIP"
-  if (cd "$OUTPUT_ROOT" && zip -qr "$REPORT_ZIP" "$(basename "$OUT_DIR")"); then
-    echo "Report zip created: $REPORT_ZIP"
-  else
-    echo "WARN: Could not create report zip: $REPORT_ZIP" | tee -a "$ERROR_LOG" >&2
-    REPORT_ZIP=""
-  fi
-else
-  echo "WARN: zip command was not found, so no zip file was created." | tee -a "$ERROR_LOG" >&2
-  REPORT_ZIP=""
-fi
+create_report_zip
 
 BLOB_DESTINATION=""
 if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
@@ -570,21 +796,8 @@ if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
   fi
 fi
 
-echo ""
-echo "Inventory complete."
-echo "Windows VM count: $VM_COUNT"
-echo "Software rows: $TOTAL_SOFTWARE"
-echo "Warnings/errors: $ERROR_COUNT"
-echo "Files:"
-echo "  VM inventory CSV:       $VM_CSV"
-echo "  Software inventory CSV: $SOFTWARE_CSV"
-echo "  Software JSONL:         $SOFTWARE_JSONL"
-echo "  Error log:              $ERROR_LOG"
-if [[ -n "$REPORT_ZIP" ]]; then
-  echo "  Download zip:           $REPORT_ZIP"
-fi
-if [[ -n "$BLOB_DESTINATION" ]]; then
-  echo "  Blob upload path:       https://$BLOB_ACCOUNT.blob.core.windows.net/$BLOB_CONTAINER/$BLOB_DESTINATION/"
-fi
+print_summary
+post_run_menu
+
 echo ""
 echo "Next safe phase after validating this report: update availability only (no downloads/installs)."
