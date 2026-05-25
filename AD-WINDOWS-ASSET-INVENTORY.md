@@ -104,6 +104,18 @@ At the end, look for:
 ZIP: .\ad-windows-asset-inventory-YYYYMMDD-HHMMSS.zip
 ```
 
+During the run you should see visible progress lines like:
+
+```text
+Probing 42 enabled AD computer(s) for live platform details...
+Progress will print START/WAIT/OK/WARN lines. Timeout per remote batch item: 30 seconds.
+BATCH 1 - starting 12 remote query job(s)...
+START SERVER01.example.local - launching remote inventory job...
+WAIT  SERVER01.example.local - waiting up to 30 second(s)...
+OK    SERVER01.example.local - asset rows: 1; software rows: 0
+WARN: LAPTOP19.example.local - timeout/offline/unreachable after 30 second(s)
+```
+
 Open `computers-ad.csv` and `computers-live.csv` first.
 
 ## Step 4: run installed software inventory

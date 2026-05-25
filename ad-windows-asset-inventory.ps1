@@ -37,7 +37,7 @@ param(
   [switch]$IncludeSoftware,
   [switch]$SkipAppx,
   [int]$ThrottleLimit = 12,
-  [int]$RemoteTimeoutSeconds = 90
+  [int]$RemoteTimeoutSeconds = 30
 )
 
 $ErrorActionPreference = 'Continue'
@@ -293,13 +293,24 @@ $total = $targets.Count
 $index = 0
 
 Write-Host "Probing $total enabled AD computer(s) for live platform details..."
+Write-Host "Progress will print START/WAIT/OK/WARN lines. Timeout per remote batch item: $RemoteTimeoutSeconds seconds."
+$batchNumber = 0
 foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b += $_; if ($b.Count -ge $ThrottleLimit) { ,$b; $b=@() } } -End { if ($b.Count) { ,$b } })) {
+  $batchNumber++
+  Write-Host "BATCH $batchNumber - starting $($batch.Count) remote query job(s)..."
   $jobs = @()
   foreach ($target in $batch) {
     $name = if ($target.DNSHostName) { $target.DNSHostName } else { $target.Name }
+    Write-Host "START $name - launching remote inventory job..."
+    $job = $null
+    try {
+      $job = Invoke-Command -ComputerName $name -ScriptBlock $remoteScript -ArgumentList ([bool]$IncludeSoftware), ([bool]$SkipAppx) -AsJob -ErrorAction Stop
+    } catch {
+      Write-Log -Level 'WARN' -Message "$name - could not start remote query: $($_.Exception.Message)"
+    }
     $jobs += [PSCustomObject]@{
       Target = $target
-      Job = Invoke-Command -ComputerName $name -ScriptBlock $remoteScript -ArgumentList ([bool]$IncludeSoftware), ([bool]$SkipAppx) -AsJob -ErrorAction SilentlyContinue
+      Job = $job
     }
   }
 
@@ -314,11 +325,12 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
       continue
     }
 
+    Write-Host "WAIT  $name - waiting up to $RemoteTimeoutSeconds second(s)..."
     $finished = Wait-Job -Job $job -Timeout $RemoteTimeoutSeconds
     if (-not $finished) {
       Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
       Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-      Write-Log -Level 'WARN' -Message "$name - timeout/offline/unreachable"
+      Write-Log -Level 'WARN' -Message "$name - timeout/offline/unreachable after $RemoteTimeoutSeconds second(s)"
       continue
     }
 
@@ -331,8 +343,11 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
       continue
     }
 
+    $assetCountForTarget = 0
+    $softwareCountForTarget = 0
     foreach ($r in @($result)) {
       if ($r.Asset) {
+        $assetCountForTarget++
         $asset = $r.Asset
         $platform = Get-PlatformClassification -Manufacturer $asset.Manufacturer -Model $asset.Model
         $hypervisor = Get-HypervisorGuess -Manufacturer $asset.Manufacturer -Model $asset.Model -BiosSerial $asset.BiosSerial
@@ -372,6 +387,7 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
         }) | Out-Null
       }
       foreach ($sw in @($r.Software)) {
+        $softwareCountForTarget++
         $platformProvider = $null
         if ($r.Asset) {
           $platformProvider = Get-ProviderGuess -Manufacturer $r.Asset.Manufacturer -Model $r.Asset.Model -BiosSerial $r.Asset.BiosSerial
@@ -395,6 +411,7 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
         }) | Out-Null
       }
     }
+    Write-Host "OK    $name - asset rows: $assetCountForTarget; software rows: $softwareCountForTarget"
   }
 }
 Write-Progress -Activity 'AD Windows asset inventory' -Completed
