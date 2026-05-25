@@ -191,25 +191,18 @@ az role assignment create \
 
     <section id="github-pages" class="card">
       <h2 style="margin-top:0;border-top:0;padding-top:0">Publish this guide on GitHub Pages</h2>
-      <p>GitHub Pages is the better permanent home for this guide. The current localhost.run URL is temporary; GitHub Pages will survive after this agent session ends.</p>
-      <h3>Simple browser method</h3>
+      <p>The files are already committed to this repository. To turn on the public guide URL, enable GitHub Pages one time in the repository settings.</p>
+      <h3>Enable the site</h3>
       <ol>
-        <li>Open your GitHub Pages repository in GitHub.</li>
-        <li>Add or upload these two files at the repository root, or in the <code>docs/</code> folder if your Pages site uses docs.</li>
-        <li><code>index.html</code></li>
-        <li><code>azure-windows-software-inventory.sh</code></li>
-        <li>Commit the changes.</li>
-        <li>In repository settings, ensure Pages is enabled for the correct branch/folder.</li>
+        <li>Open <strong>Settings</strong> for this repository.</li>
+        <li>Open <strong>Pages</strong> from the left menu.</li>
+        <li>Under <strong>Build and deployment</strong>, set <strong>Source</strong> to <strong>Deploy from a branch</strong>.</li>
+        <li>Set <strong>Branch</strong> to <code>gh-pages</code> and folder to <code>/ (root)</code>.</li>
+        <li>Click <strong>Save</strong>.</li>
       </ol>
-      <h3>Command-line method if you have the repo cloned</h3>
-      <pre><button class="copy">Copy</button><code># From your GitHub Pages repo working copy:
-cp /path/to/index.html ./index.html
-cp /path/to/azure-windows-software-inventory.sh ./azure-windows-software-inventory.sh
-
-git add index.html azure-windows-software-inventory.sh
-git commit -m "Add Azure Windows VM software inventory guide"
-git push</code></pre>
-      <p class="note">I can publish this directly for you once GitHub auth is available in this environment or you give me the exact repository URL and a safe temporary token. Right now this environment does not have <code>gh</code> or <code>GITHUB_TOKEN</code> configured.</p>
+      <p>After GitHub finishes publishing, the guide should be available at:</p>
+      <pre><button class="copy">Copy</button><code>https://bim75.github.io/AICodeWork/</code></pre>
+      <p class="note">The script download command uses the raw GitHub URL, so the script itself works even before GitHub Pages is enabled.</p>
     </section>
 
     <section id="requirements" class="card">
