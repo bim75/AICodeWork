@@ -288,6 +288,23 @@ $adCsv = Join-Path $OutputDir 'computers-ad.csv'
 $adRows | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $adCsv
 Write-Host "AD Windows computer objects: $($adRows.Count)"
 
+function Test-IsLocalTarget {
+  param([string]$Name)
+  if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+  $candidate = $Name.Trim().TrimEnd('.').ToLowerInvariant()
+  $localNames = New-Object 'System.Collections.Generic.HashSet[string]'
+  [void]$localNames.Add($env:COMPUTERNAME.ToLowerInvariant())
+  try { [void]$localNames.Add(([System.Net.Dns]::GetHostName()).TrimEnd('.').ToLowerInvariant()) } catch {}
+  try { [void]$localNames.Add(([System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName).TrimEnd('.').ToLowerInvariant()) } catch {}
+  try { [void]$localNames.Add(([System.Net.Dns]::GetHostEntry('localhost').HostName).TrimEnd('.').ToLowerInvariant()) } catch {}
+  if ($localNames.Contains($candidate)) { return $true }
+  foreach ($localName in $localNames) {
+    if ($localName -and $localName.Contains('.') -and $localName.Split('.')[0] -eq $candidate) { return $true }
+    if ($candidate.Contains('.') -and $candidate.Split('.')[0] -eq $localName) { return $true }
+  }
+  return $false
+}
+
 $liveRows = New-Object System.Collections.Generic.List[object]
 $softwareRows = New-Object System.Collections.Generic.List[object]
 $targets = @($adRows | Where-Object { $_.Enabled -eq $true })
@@ -307,16 +324,29 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
   $jobs = @()
   foreach ($target in $batch) {
     $name = if ($target.DNSHostName) { $target.DNSHostName } else { $target.Name }
-    Write-Host "START $name - launching remote inventory job..."
+    $isLocalTarget = Test-IsLocalTarget $name
     $job = $null
-    try {
-      $job = Invoke-Command -ComputerName $name -ScriptBlock $remoteScript -ArgumentList ([bool]$IncludeSoftware), ([bool]$SkipAppx) -AsJob -ErrorAction Stop
-    } catch {
-      Write-Log -Level 'WARN' -Message "$name - could not start remote query: $($_.Exception.Message)"
+    $localResult = $null
+    if ($isLocalTarget) {
+      Write-Host "START $name - local computer detected; collecting directly without WinRM..."
+      try {
+        $localResult = & $remoteScript ([bool]$IncludeSoftware) ([bool]$SkipAppx)
+      } catch {
+        Write-Log -Level 'WARN' -Message "$name - local inventory failed: $($_.Exception.Message)"
+      }
+    } else {
+      Write-Host "START $name - launching remote inventory job..."
+      try {
+        $job = Invoke-Command -ComputerName $name -ScriptBlock $remoteScript -ArgumentList ([bool]$IncludeSoftware), ([bool]$SkipAppx) -AsJob -ErrorAction Stop
+      } catch {
+        Write-Log -Level 'WARN' -Message "$name - could not start remote query: $($_.Exception.Message)"
+      }
     }
     $jobs += [PSCustomObject]@{
       Target = $target
       Job = $job
+      IsLocal = $isLocalTarget
+      LocalResult = $localResult
     }
   }
 
@@ -326,7 +356,19 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
     $name = if ($target.DNSHostName) { $target.DNSHostName } else { $target.Name }
     Write-Progress -Activity 'AD Windows asset inventory' -Status "$index/$total $name" -PercentComplete (($index / [math]::Max($total,1)) * 100)
     $job = $item.Job
-    if (-not $job) {
+    if ($item.IsLocal) {
+      if ($item.LocalResult) {
+        $result = $item.LocalResult
+      } else {
+        $consecutiveRemoteFailureCount++
+        Write-Log -Level 'WARN' -Message "$name - local inventory returned no result"
+        if ((-not $ContinueAfterMassRemoteFailure) -and $reachableSuccessCount -eq 0 -and $consecutiveRemoteFailureCount -ge $StopAfterConsecutiveRemoteFailures) {
+          Write-Log -Level 'WARN' -Message "Stopping live query after $consecutiveRemoteFailureCount consecutive failures and zero successes. AD-only inventory files were still created. Re-run with -ContinueAfterMassRemoteFailure to force attempts against every target."
+          $stoppedLiveQueryEarly = $true
+        }
+        continue
+      }
+    } elseif (-not $job) {
       $consecutiveRemoteFailureCount++
       Write-Log -Level 'WARN' -Message "$name - could not start remote query"
       if ((-not $ContinueAfterMassRemoteFailure) -and $reachableSuccessCount -eq 0 -and $consecutiveRemoteFailureCount -ge $StopAfterConsecutiveRemoteFailures) {
@@ -334,34 +376,34 @@ foreach ($batch in @($targets | ForEach-Object -Begin { $b=@() } -Process { $b +
         $stoppedLiveQueryEarly = $true
       }
       continue
-    }
+    } else {
+      Write-Host "WAIT  $name - waiting up to $RemoteTimeoutSeconds second(s)..."
+      $finished = Wait-Job -Job $job -Timeout $RemoteTimeoutSeconds
+      if (-not $finished) {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        $consecutiveRemoteFailureCount++
+        Write-Log -Level 'WARN' -Message "$name - timeout/offline/unreachable after $RemoteTimeoutSeconds second(s)"
+        if ((-not $ContinueAfterMassRemoteFailure) -and $reachableSuccessCount -eq 0 -and $consecutiveRemoteFailureCount -ge $StopAfterConsecutiveRemoteFailures) {
+          Write-Log -Level 'WARN' -Message "Stopping live remote query after $consecutiveRemoteFailureCount consecutive failures and zero successes. AD-only inventory files were still created. This usually means WinRM is disabled/blocked, DNS cannot resolve targets, or this account lacks local admin rights. Re-run with -ContinueAfterMassRemoteFailure to force attempts against every target."
+          $stoppedLiveQueryEarly = $true
+        }
+        continue
+      }
 
-    Write-Host "WAIT  $name - waiting up to $RemoteTimeoutSeconds second(s)..."
-    $finished = Wait-Job -Job $job -Timeout $RemoteTimeoutSeconds
-    if (-not $finished) {
-      Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+      $result = Receive-Job -Job $job -ErrorAction SilentlyContinue
+      $jobErrors = @($job.ChildJobs | ForEach-Object { $_.Error } | Where-Object { $_ })
       Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-      $consecutiveRemoteFailureCount++
-      Write-Log -Level 'WARN' -Message "$name - timeout/offline/unreachable after $RemoteTimeoutSeconds second(s)"
-      if ((-not $ContinueAfterMassRemoteFailure) -and $reachableSuccessCount -eq 0 -and $consecutiveRemoteFailureCount -ge $StopAfterConsecutiveRemoteFailures) {
-        Write-Log -Level 'WARN' -Message "Stopping live remote query after $consecutiveRemoteFailureCount consecutive failures and zero successes. AD-only inventory files were still created. This usually means WinRM is disabled/blocked, DNS cannot resolve targets, or this account lacks local admin rights. Re-run with -ContinueAfterMassRemoteFailure to force attempts against every target."
-        $stoppedLiveQueryEarly = $true
-      }
-      continue
-    }
 
-    $result = Receive-Job -Job $job -ErrorAction SilentlyContinue
-    $jobErrors = @($job.ChildJobs | ForEach-Object { $_.Error } | Where-Object { $_ })
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-
-    if ($jobErrors.Count -gt 0 -or -not $result) {
-      $consecutiveRemoteFailureCount++
-      Write-Log -Level 'WARN' -Message "$name - remote query failed: $($jobErrors -join '; ')"
-      if ((-not $ContinueAfterMassRemoteFailure) -and $reachableSuccessCount -eq 0 -and $consecutiveRemoteFailureCount -ge $StopAfterConsecutiveRemoteFailures) {
-        Write-Log -Level 'WARN' -Message "Stopping live remote query after $consecutiveRemoteFailureCount consecutive failures and zero successes. AD-only inventory files were still created. This usually means WinRM is disabled/blocked, DNS cannot resolve targets, or this account lacks local admin rights. Re-run with -ContinueAfterMassRemoteFailure to force attempts against every target."
-        $stoppedLiveQueryEarly = $true
+      if ($jobErrors.Count -gt 0 -or -not $result) {
+        $consecutiveRemoteFailureCount++
+        Write-Log -Level 'WARN' -Message "$name - remote query failed: $($jobErrors -join '; ')"
+        if ((-not $ContinueAfterMassRemoteFailure) -and $reachableSuccessCount -eq 0 -and $consecutiveRemoteFailureCount -ge $StopAfterConsecutiveRemoteFailures) {
+          Write-Log -Level 'WARN' -Message "Stopping live remote query after $consecutiveRemoteFailureCount consecutive failures and zero successes. AD-only inventory files were still created. This usually means WinRM is disabled/blocked, DNS cannot resolve targets, or this account lacks local admin rights. Re-run with -ContinueAfterMassRemoteFailure to force attempts against every target."
+          $stoppedLiveQueryEarly = $true
+        }
+        continue
       }
-      continue
     }
 
     $assetCountForTarget = 0

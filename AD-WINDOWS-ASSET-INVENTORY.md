@@ -64,8 +64,10 @@ You need:
 1. PowerShell 5.1 or newer.
 2. RSAT Active Directory PowerShell module.
 3. Network reachability to the target machines.
-4. PowerShell Remoting/WinRM enabled on target machines for live enrichment.
-5. Local administrator or equivalent rights on target machines for best software visibility.
+4. PowerShell Remoting/WinRM enabled on remote target machines for live enrichment.
+5. Local administrator or equivalent rights on remote target machines for best software visibility.
+
+Note: if the script finds the computer you are running from in AD, it collects that local machine directly without WinRM. Local collection should not fail with a PowerShell Remoting access-denied error.
 
 The script is read-only. It does not install, update, uninstall, or modify software.
 
@@ -110,6 +112,8 @@ During the run you should see visible progress lines like:
 Probing 42 enabled AD computer(s) for live platform details...
 Progress will print START/WAIT/OK/WARN lines. Timeout per remote batch item: 30 seconds.
 BATCH 1 - starting 12 remote query job(s)...
+START AZINFRA01.example.local - local computer detected; collecting directly without WinRM...
+OK    AZINFRA01.example.local - asset rows: 1; software rows: 0
 START SERVER01.example.local - launching remote inventory job...
 WAIT  SERVER01.example.local - waiting up to 30 second(s)...
 OK    SERVER01.example.local - asset rows: 1; software rows: 0
@@ -198,7 +202,9 @@ Then test a tiny remote command:
 Invoke-Command -ComputerName SERVER01 -ScriptBlock { hostname; whoami }
 ```
 
-If either command fails, the issue is not the inventory script. It is usually one of these:
+If `Invoke-Command -ComputerName <this computer>` fails with `Access is denied`, that can happen even though you are sitting on the machine because it still uses WinRM and remote-session authorization. The current script bypasses WinRM for the local computer and collects it directly.
+
+If either command fails for a different remote computer, the issue is not the inventory script. It is usually one of these:
 
 1. WinRM/PowerShell Remoting is not enabled on target machines.
 2. Windows Firewall blocks WinRM, usually TCP 5985 for HTTP or 5986 for HTTPS.
