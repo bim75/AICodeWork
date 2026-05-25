@@ -27,6 +27,7 @@ set -euo pipefail
 #   ./azure-windows-software-inventory.sh --all-vms
 #   ./azure-windows-software-inventory.sh --non-interactive
 #   ./azure-windows-software-inventory.sh --blob-account <storageaccount> --blob-container <container>
+#     Recommended for larger inventories: guest uploads full JSON to Blob Storage to avoid Run Command stdout truncation.
 
 SUBSCRIPTION=""
 OUTPUT_ROOT="./inventory-output"
@@ -314,6 +315,10 @@ echo "Output directory: $OUT_DIR"
 # PowerShell that runs inside each Windows VM via Azure Run Command.
 # Read-only: queries uninstall registry keys only. No package install/update actions.
 read -r -d '' GUEST_PS <<'EOF' || true
+param(
+  [string]$OutputBlobUri = ''
+)
+
 $ErrorActionPreference = 'Continue'
 
 function Convert-InstallDate {
@@ -517,8 +522,21 @@ try { $items += @(Read-AppxPackagesAllUsers) } catch { Write-Error $_ }
 
 $items = @($items | Where-Object { $_ -and $_.DisplayName } | Sort-Object DisplayName, DisplayVersion, Publisher -Unique)
 
-# Always emit a JSON array. If no rows are found, the Bash wrapper will log a warning with raw output paths.
-@($items) | ConvertTo-Json -Depth 4 -Compress
+# Always produce a JSON array. If OutputBlobUri is provided, upload the full payload to
+# Azure Blob Storage and print only a small marker to stdout. Azure Run Command stdout is
+# size-limited and large software inventories can otherwise be truncated into invalid JSON.
+$jsonPayload = @($items) | ConvertTo-Json -Depth 4 -Compress
+if (-not [string]::IsNullOrWhiteSpace($OutputBlobUri)) {
+  try {
+    Invoke-RestMethod -Method Put -Uri $OutputBlobUri -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } -ContentType 'application/json' -Body $jsonPayload | Out-Null
+    [PSCustomObject]@{ UploadedToBlob = $true; RowCount = @($items).Count; ComputerName = $env:COMPUTERNAME } | ConvertTo-Json -Compress
+  } catch {
+    Write-Error "Failed uploading inventory JSON to blob: $($_.Exception.Message)"
+    $jsonPayload
+  }
+} else {
+  $jsonPayload
+}
 EOF
 
 # Discover Windows VMs. az vm list is used to avoid requiring Resource Graph extension.
@@ -600,9 +618,25 @@ else
   echo "Parallel mode is enabled (--parallel $PARALLEL), so VM progress is shown as START/OK lines instead of one shared spinner."
 fi
 
+if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
+  echo ""
+  echo "Blob-backed Run Command output enabled. Full per-VM JSON will be uploaded from the guest to Blob Storage to avoid Azure Run Command stdout truncation."
+  echo "  Storage account: $BLOB_ACCOUNT"
+  echo "  Container:       $BLOB_CONTAINER"
+  if ! az storage container create \
+      --account-name "$BLOB_ACCOUNT" \
+      --name "$BLOB_CONTAINER" \
+      --auth-mode login \
+      -o none; then
+    echo "ERROR: Could not create/verify blob container $BLOB_CONTAINER in $BLOB_ACCOUNT. Either grant Storage Blob Data Contributor/Owner or rerun without --blob-account/--blob-container." >&2
+    exit 1
+  fi
+fi
+
 collect_vm() {
   local line="$1"
-  local sub rg vm loc power size os computer id safe output_file software_file err_file
+  local sub rg vm loc power size os computer id safe output_file software_file err_file blob_name blob_sas blob_uri sas_expiry
+  local -a run_command_extra=()
   sub=$(jq -r '.subscriptionId' <<<"$line")
   rg=$(jq -r '.resourceGroup' <<<"$line")
   vm=$(jq -r '.name' <<<"$line")
@@ -622,6 +656,33 @@ collect_vm() {
     return 0
   fi
 
+  blob_uri=""
+  blob_name=""
+  if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
+    blob_name="$BLOB_PREFIX/$TS/raw/${safe}.software.json"
+    sas_expiry=$(date -u -d '+4 hours' '+%Y-%m-%dT%H:%MZ')
+    if blob_sas=$(az storage blob generate-sas \
+        --account-name "$BLOB_ACCOUNT" \
+        --container-name "$BLOB_CONTAINER" \
+        --name "$blob_name" \
+        --permissions cw \
+        --expiry "$sas_expiry" \
+        --https-only \
+        --as-user \
+        --auth-mode login \
+        -o tsv 2>> "$err_file"); then
+      blob_uri="https://$BLOB_ACCOUNT.blob.core.windows.net/$BLOB_CONTAINER/$blob_name?$blob_sas"
+    else
+      echo "WARN $rg/$vm - could not generate user-delegation blob SAS; falling back to Run Command stdout, which may truncate large inventories" | tee -a "$ERROR_LOG" >&2
+      blob_uri=""
+      blob_name=""
+    fi
+  fi
+
+  if [[ -n "$blob_uri" ]]; then
+    run_command_extra=(--parameters "OutputBlobUri=$blob_uri")
+  fi
+
   echo "START $rg/$vm - invoking Azure Run Command to read installed software..." >&2
   if [[ "${SHOW_VM_SPINNER:-}" == "1" ]]; then
     if ! run_with_spinner "  Working on $rg/$vm with Azure Run Command" "$output_file" "$err_file" az vm run-command invoke \
@@ -630,6 +691,7 @@ collect_vm() {
         --name "$vm" \
         --command-id RunPowerShellScript \
         --scripts "$GUEST_PS" \
+        "${run_command_extra[@]}" \
         -o json; then
       echo "ERROR $rg/$vm - run-command failed: $(tr '\n' ' ' < "$err_file")" | tee -a "$ERROR_LOG" >&2
       return 0
@@ -640,6 +702,7 @@ collect_vm() {
       --name "$vm" \
       --command-id RunPowerShellScript \
       --scripts "$GUEST_PS" \
+      "${run_command_extra[@]}" \
       -o json > "$output_file" 2> "$err_file"; then
     echo "ERROR $rg/$vm - run-command failed: $(tr '\n' ' ' < "$err_file")" | tee -a "$ERROR_LOG" >&2
     return 0
@@ -656,12 +719,31 @@ collect_vm() {
   if [[ -z "$msg" || "$msg" == "null" ]]; then
     msg=$(jq -r '[.value[]?.message] | join("\n")' "$output_file")
   fi
-  if [[ -z "$msg" || "$msg" == "null" ]]; then
-    echo "WARN $rg/$vm - no software output returned" | tee -a "$ERROR_LOG" >&2
-    return 0
+  if [[ -n "$blob_name" ]]; then
+    if az storage blob download \
+        --account-name "$BLOB_ACCOUNT" \
+        --container-name "$BLOB_CONTAINER" \
+        --name "$blob_name" \
+        --file "$software_file" \
+        --auth-mode login \
+        --no-progress \
+        -o none 2>> "$err_file" && jq empty "$software_file" 2>> "$err_file"; then
+      echo "INFO $rg/$vm - downloaded full software JSON from blob: $blob_name" >&2
+    else
+      echo "WARN $rg/$vm - blob-backed payload was not available/valid; falling back to Run Command stdout parse" | tee -a "$ERROR_LOG" >&2
+      rm -f "$software_file"
+    fi
   fi
 
-  # Keep only the JSON array/object portion in case Run Command adds wrappers such as:
+  if [[ -s "$software_file" ]]; then
+    :
+  else
+    if [[ -z "$msg" || "$msg" == "null" ]]; then
+      echo "WARN $rg/$vm - no software output returned" | tee -a "$ERROR_LOG" >&2
+      return 0
+    fi
+
+    # Keep only the JSON array/object portion in case Run Command adds wrappers such as:
   # [stdout]
   # [...json...]
   # [stderr]
@@ -685,6 +767,7 @@ raise SystemExit("could not parse JSON payload")
     echo "ERROR $rg/$vm - could not parse run-command JSON output: $(tr '\n' ' ' < "$err_file")" | tee -a "$ERROR_LOG" >&2
     return 0
   }
+  fi
 
   local vm_software_count
   vm_software_count=$(jq 'if type=="array" then length elif type=="object" then 1 else 0 end' "$software_file" 2>> "$err_file" || echo 0)
@@ -725,7 +808,7 @@ raise SystemExit("could not parse JSON payload")
 }
 export -f collect_vm
 export -f run_with_spinner
-export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL SHOW_VM_SPINNER
+export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL SHOW_VM_SPINNER BLOB_ACCOUNT BLOB_CONTAINER BLOB_PREFIX TS
 
 # Run collection with bounded parallelism.
 if command -v xargs >/dev/null 2>&1; then
