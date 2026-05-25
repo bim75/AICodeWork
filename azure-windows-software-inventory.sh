@@ -27,7 +27,9 @@ set -euo pipefail
 #   ./azure-windows-software-inventory.sh --all-vms
 #   ./azure-windows-software-inventory.sh --non-interactive
 #   ./azure-windows-software-inventory.sh --blob-account <storageaccount> --blob-container <container>
-#     Recommended for larger inventories: guest uploads full JSON to Blob Storage to avoid Run Command stdout truncation.
+#     Required/default for reliable software payloads: guest uploads full JSON to Blob Storage to avoid Run Command stdout truncation.
+#   ./azure-windows-software-inventory.sh --no-blob
+#     Debug fallback only: parse Azure Run Command stdout directly. Not recommended for real inventories.
 
 SUBSCRIPTION=""
 OUTPUT_ROOT="./inventory-output"
@@ -39,6 +41,7 @@ NON_INTERACTIVE=""
 BLOB_ACCOUNT=""
 BLOB_CONTAINER=""
 BLOB_PREFIX="azure-windows-software-inventory"
+NO_BLOB=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,6 +65,8 @@ while [[ $# -gt 0 ]]; do
       BLOB_CONTAINER="$2"; shift 2 ;;
     --blob-prefix)
       BLOB_PREFIX="$2"; shift 2 ;;
+    --no-blob)
+      NO_BLOB="1"; shift ;;
     -h|--help)
       sed -n '1,55p' "$0"; exit 0 ;;
     *)
@@ -210,6 +215,66 @@ choose_subscription_interactive() {
     fi
     echo "Please enter a number from 1 to $sub_count, R, or Q." >&2
   done
+}
+
+choose_storage_interactive() {
+  if [[ -n "$NO_BLOB" || -n "$BLOB_ACCOUNT" ]]; then
+    return 0
+  fi
+
+  local accounts_file accounts_err account_count choice selected
+  accounts_file="$TMP_DIR/storage-accounts.json"
+  accounts_err="$TMP_DIR/storage-accounts.err"
+
+  echo ""
+  echo "Selecting Blob Storage for reliable Run Command output..."
+  if ! run_with_spinner "Querying storage accounts" "$accounts_file" "$accounts_err" az storage account list -o json; then
+    echo "WARN: Could not list storage accounts: $(tr '\n' ' ' < "$accounts_err")" >&2
+    echo "WARN: Continuing without Blob mode; large inventories may fail due to Run Command stdout truncation." >&2
+    NO_BLOB="1"
+    return 0
+  fi
+
+  account_count="$(jq 'length' "$accounts_file")"
+  if [[ "$account_count" == "0" ]]; then
+    echo "WARN: No storage accounts found in this subscription." >&2
+    echo "WARN: Continuing without Blob mode; large inventories may fail due to Run Command stdout truncation." >&2
+    NO_BLOB="1"
+    return 0
+  fi
+
+  echo ""
+  echo "Storage accounts:"
+  printf '  %3s  %-28s  %-28s  %-14s\n' "#" "Name" "Resource Group" "Location"
+  printf '  %3s  %-28s  %-28s  %-14s\n' "---" "----------------------------" "----------------------------" "--------------"
+  jq -r 'to_entries[] | [.key + 1, .value.name, .value.resourceGroup, .value.primaryLocation] | @tsv' "$accounts_file" |
+    while IFS=$'\t' read -r idx name rg loc; do
+      printf '  %3s  %-28.28s  %-28.28s  %-14.14s\n' "$idx" "$name" "$rg" "$loc"
+    done
+
+  echo ""
+  echo "Choose a storage account for temporary per-VM JSON blobs."
+  echo "Enter a number, or S to skip Blob mode (not recommended)."
+  read -r -p "Storage choice: " choice
+  case "${choice^^}" in
+    S)
+      NO_BLOB="1"
+      echo "Blob mode skipped. Run Command stdout fallback will be used."
+      return 0
+      ;;
+  esac
+  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= account_count )); then
+    selected="$(jq -r ".[$((choice - 1))].name" "$accounts_file")"
+    BLOB_ACCOUNT="$selected"
+    if [[ -z "$BLOB_CONTAINER" ]]; then
+      BLOB_CONTAINER="inventory"
+    fi
+    echo "Selected Blob Storage: $BLOB_ACCOUNT / container $BLOB_CONTAINER"
+    return 0
+  fi
+
+  echo "Invalid choice. Continuing without Blob mode; large inventories may fail." >&2
+  NO_BLOB="1"
 }
 
 choose_vm_interactive() {
@@ -558,6 +623,7 @@ if [[ -z "$FILTER_VM_NAME" && -z "$FILTER_RG" && -z "$ALL_VMS" && -z "$NON_INTER
     if [[ -z "$SUBSCRIPTION" ]]; then
       choose_subscription_interactive
     fi
+    choose_storage_interactive
     if choose_vm_interactive; then
       break
     else
@@ -618,7 +684,14 @@ else
   echo "Parallel mode is enabled (--parallel $PARALLEL), so VM progress is shown as START/OK lines instead of one shared spinner."
 fi
 
-if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
+if [[ -z "$NO_BLOB" ]]; then
+  if [[ -z "$BLOB_ACCOUNT" ]]; then
+    echo "ERROR: Blob-backed output is required for reliable inventories, but no storage account was selected/provided. Use --blob-account NAME --blob-container inventory, or --no-blob for debug fallback." >&2
+    exit 2
+  fi
+  if [[ -z "$BLOB_CONTAINER" ]]; then
+    BLOB_CONTAINER="inventory"
+  fi
   echo ""
   echo "Blob-backed Run Command output enabled. Full per-VM JSON will be uploaded from the guest to Blob Storage to avoid Azure Run Command stdout truncation."
   echo "  Storage account: $BLOB_ACCOUNT"
@@ -628,7 +701,7 @@ if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
       --name "$BLOB_CONTAINER" \
       --auth-mode login \
       -o none; then
-    echo "ERROR: Could not create/verify blob container $BLOB_CONTAINER in $BLOB_ACCOUNT. Either grant Storage Blob Data Contributor/Owner or rerun without --blob-account/--blob-container." >&2
+    echo "ERROR: Could not create/verify blob container $BLOB_CONTAINER in $BLOB_ACCOUNT. Either grant Storage Blob Data Contributor/Owner or rerun with --no-blob for debug fallback." >&2
     exit 1
   fi
 fi
@@ -658,7 +731,7 @@ collect_vm() {
 
   blob_uri=""
   blob_name=""
-  if [[ -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
+  if [[ -z "$NO_BLOB" && -n "$BLOB_ACCOUNT" && -n "$BLOB_CONTAINER" ]]; then
     blob_name="$BLOB_PREFIX/$TS/raw/${safe}.software.json"
     sas_expiry=$(date -u -d '+4 hours' '+%Y-%m-%dT%H:%MZ')
     if blob_sas=$(az storage blob generate-sas \
@@ -808,7 +881,7 @@ raise SystemExit("could not parse JSON payload")
 }
 export -f collect_vm
 export -f run_with_spinner
-export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL SHOW_VM_SPINNER BLOB_ACCOUNT BLOB_CONTAINER BLOB_PREFIX TS
+export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL SHOW_VM_SPINNER BLOB_ACCOUNT BLOB_CONTAINER BLOB_PREFIX TS NO_BLOB
 
 # Run collection with bounded parallelism.
 if command -v xargs >/dev/null 2>&1; then
