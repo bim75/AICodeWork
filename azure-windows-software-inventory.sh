@@ -315,47 +315,79 @@ echo "Output directory: $OUT_DIR"
 # Read-only: queries uninstall registry keys only. No package install/update actions.
 read -r -d '' GUEST_PS <<'EOF' || true
 $ErrorActionPreference = 'Continue'
-$paths = @(
-  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-)
 
-$items = foreach ($path in $paths) {
-  Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName -and $_.DisplayName.Trim().Length -gt 0 } |
-    ForEach-Object {
-      $installDateRaw = $null
-      $installDateIso = $null
-      if ($_.InstallDate) {
-        $installDateRaw = [string]$_.InstallDate
-        if ($installDateRaw -match '^\d{8}$') {
-          try {
-            $installDateIso = ([datetime]::ParseExact($installDateRaw, 'yyyyMMdd', $null)).ToString('yyyy-MM-dd')
-          } catch { $installDateIso = $null }
-        }
-      }
-
-      [PSCustomObject]@{
-        ComputerName      = $env:COMPUTERNAME
-        DisplayName       = [string]$_.DisplayName
-        DisplayVersion    = [string]$_.DisplayVersion
-        Publisher         = [string]$_.Publisher
-        InstallDateRaw    = $installDateRaw
-        InstallDate       = $installDateIso
-        InstallLocation   = [string]$_.InstallLocation
-        UninstallString   = [string]$_.UninstallString
-        QuietUninstallString = [string]$_.QuietUninstallString
-        RegistryKey       = [string]$_.PSChildName
-        RegistryPath      = [string]$_.PSPath
-        Architecture      = if ($_.PSPath -like '*WOW6432Node*') { 'x86' } else { 'x64' }
-      }
-    }
+function Convert-InstallDate {
+  param([object]$Value)
+  $raw = if ($null -ne $Value) { [string]$Value } else { $null }
+  $iso = $null
+  if ($raw -match '^\d{8}$') {
+    try { $iso = ([datetime]::ParseExact($raw, 'yyyyMMdd', $null)).ToString('yyyy-MM-dd') } catch { $iso = $null }
+  }
+  [PSCustomObject]@{ Raw = $raw; Iso = $iso }
 }
 
-# Deduplicate common duplicate registry entries.
-$items |
-  Sort-Object DisplayName, DisplayVersion, Publisher, Architecture -Unique |
-  ConvertTo-Json -Depth 4 -Compress
+function Read-UninstallRegistryView {
+  param(
+    [Microsoft.Win32.RegistryView]$View,
+    [string]$Architecture
+  )
+
+  $base = $null
+  $uninstall = $null
+  try {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $View)
+    $uninstall = $base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+    if ($null -eq $uninstall) { return }
+
+    foreach ($subKeyName in $uninstall.GetSubKeyNames()) {
+      $subKey = $null
+      try {
+        $subKey = $uninstall.OpenSubKey($subKeyName)
+        if ($null -eq $subKey) { continue }
+
+        $displayName = [string]$subKey.GetValue('DisplayName')
+        if ([string]::IsNullOrWhiteSpace($displayName)) { continue }
+
+        $installDate = Convert-InstallDate $subKey.GetValue('InstallDate')
+
+        [PSCustomObject]@{
+          ComputerName         = $env:COMPUTERNAME
+          DisplayName          = $displayName
+          DisplayVersion       = [string]$subKey.GetValue('DisplayVersion')
+          Publisher            = [string]$subKey.GetValue('Publisher')
+          InstallDateRaw       = $installDate.Raw
+          InstallDate          = $installDate.Iso
+          InstallLocation      = [string]$subKey.GetValue('InstallLocation')
+          UninstallString      = [string]$subKey.GetValue('UninstallString')
+          QuietUninstallString = [string]$subKey.GetValue('QuietUninstallString')
+          RegistryKey          = [string]$subKeyName
+          RegistryPath         = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$subKeyName"
+          Architecture         = $Architecture
+        }
+      } catch {
+        Write-Error "Failed reading uninstall subkey $Architecture/$subKeyName : $($_.Exception.Message)"
+      } finally {
+        if ($null -ne $subKey) { $subKey.Close() }
+      }
+    }
+  } catch {
+    Write-Error "Failed opening uninstall registry view $Architecture : $($_.Exception.Message)"
+  } finally {
+    if ($null -ne $uninstall) { $uninstall.Close() }
+    if ($null -ne $base) { $base.Close() }
+  }
+}
+
+# Read both 64-bit and 32-bit registry views explicitly. This avoids PowerShell provider
+# redirection issues under Azure Run Command and works even when the host PowerShell bitness varies.
+$items = @()
+try { $items += @(Read-UninstallRegistryView -View ([Microsoft.Win32.RegistryView]::Registry64) -Architecture 'x64') } catch { Write-Error $_ }
+try { $items += @(Read-UninstallRegistryView -View ([Microsoft.Win32.RegistryView]::Registry32) -Architecture 'x86') } catch { Write-Error $_ }
+
+$items = @($items | Where-Object { $_ -and $_.DisplayName } | Sort-Object DisplayName, DisplayVersion, Publisher, Architecture -Unique)
+
+# Always emit a JSON array. If no rows are found, the Bash wrapper will log a warning.
+@($items) | ConvertTo-Json -Depth 4 -Compress
 EOF
 
 # Discover Windows VMs. az vm list is used to avoid requiring Resource Graph extension.
@@ -515,6 +547,15 @@ raise SystemExit("could not parse JSON payload")
     return 0
   }
 
+  local vm_software_count
+  vm_software_count=$(jq 'if type=="array" then length elif type=="object" then 1 else 0 end' "$software_file" 2>> "$err_file" || echo 0)
+  if [[ "$vm_software_count" == "0" ]]; then
+    echo "WARN $rg/$vm - Run Command succeeded but no installed software rows were found in HKLM uninstall registry views" | tee -a "$ERROR_LOG" >&2
+    echo "WARN $rg/$vm - raw Run Command output saved at: $output_file" | tee -a "$ERROR_LOG" >&2
+    echo "WARN $rg/$vm - parsed software payload saved at: $software_file" | tee -a "$ERROR_LOG" >&2
+    return 0
+  fi
+
   jq -c --arg sub "$sub" --arg rg "$rg" --arg vm "$vm" --arg loc "$loc" --arg power "$power" --arg size "$size" --arg os "$os" --arg computer "$computer" --arg id "$id" '
     (if type=="array" then . else [.] end)[] |
     {
@@ -541,7 +582,7 @@ raise SystemExit("could not parse JSON payload")
       QuietUninstallString: (.QuietUninstallString // "")
     }' "$software_file" >> "$SOFTWARE_JSONL"
 
-  echo "OK $rg/$vm"
+  echo "OK $rg/$vm - $vm_software_count software row(s)"
 }
 export -f collect_vm
 export -f run_with_spinner
