@@ -434,16 +434,86 @@ function Read-ProgramsPackageProvider {
   }
 }
 
+function Read-LoadedUserUninstallKeys {
+  try {
+    Get-ChildItem -Path Registry::HKEY_USERS -ErrorAction SilentlyContinue |
+      Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } |
+      ForEach-Object {
+        $sid = $_.PSChildName
+        $paths = @(
+          "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+          "Registry::HKEY_USERS\$sid\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        foreach ($path in $paths) {
+          try {
+            Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -and $_.DisplayName.Trim().Length -gt 0 } |
+              ForEach-Object {
+                $installDate = Convert-InstallDate $_.InstallDate
+                [PSCustomObject]@{
+                  ComputerName         = $env:COMPUTERNAME
+                  DisplayName          = [string]$_.DisplayName
+                  DisplayVersion       = [string]$_.DisplayVersion
+                  Publisher            = [string]$_.Publisher
+                  InstallDateRaw       = $installDate.Raw
+                  InstallDate          = $installDate.Iso
+                  InstallLocation      = [string]$_.InstallLocation
+                  UninstallString      = [string]$_.UninstallString
+                  QuietUninstallString = [string]$_.QuietUninstallString
+                  RegistryKey          = [string]$_.PSChildName
+                  RegistryPath         = [string]$_.PSPath
+                  Architecture         = "LoadedUser:$sid"
+                }
+              }
+          } catch {
+            Write-Error "Failed reading loaded user uninstall path $path : $($_.Exception.Message)"
+          }
+        }
+      }
+  } catch {
+    Write-Error "Failed reading loaded HKEY_USERS uninstall keys : $($_.Exception.Message)"
+  }
+}
+
+function Read-AppxPackagesAllUsers {
+  try {
+    Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -and $_.Name.Trim().Length -gt 0 } |
+      ForEach-Object {
+        [PSCustomObject]@{
+          ComputerName         = $env:COMPUTERNAME
+          DisplayName          = [string]$_.Name
+          DisplayVersion       = [string]$_.Version
+          Publisher            = [string]$_.Publisher
+          InstallDateRaw       = $null
+          InstallDate          = $null
+          InstallLocation      = [string]$_.InstallLocation
+          UninstallString      = $null
+          QuietUninstallString = $null
+          RegistryKey          = [string]$_.PackageFullName
+          RegistryPath         = 'Get-AppxPackage:AllUsers'
+          Architecture         = "Appx:$($_.Architecture)"
+        }
+      }
+  } catch {
+    Write-Error "Failed reading Appx packages for all users : $($_.Exception.Message)"
+  }
+}
+
 # Read multiple safe sources. No Win32_Product is used because it can trigger MSI repair actions.
 # 1. Explicit .NET registry views avoid PowerShell provider bitness/redirection issues.
 # 2. Provider paths are kept as a fallback because some older systems behave better there.
-# 3. Get-Package Programs provider is read-only and can find entries if registry reads are unusual.
+# 3. Loaded HKEY_USERS uninstall keys catch per-user installs shown in Apps & Features.
+# 4. Get-Package Programs provider is read-only and can find entries if registry reads are unusual.
+# 5. Get-AppxPackage -AllUsers catches Microsoft Store/Appx entries shown in modern Apps.
 $items = @()
 try { $items += @(Read-UninstallRegistryView -View ([Microsoft.Win32.RegistryView]::Registry64) -Architecture 'x64') } catch { Write-Error $_ }
 try { $items += @(Read-UninstallRegistryView -View ([Microsoft.Win32.RegistryView]::Registry32) -Architecture 'x86') } catch { Write-Error $_ }
 try { $items += @(Read-UninstallProviderPath -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -Architecture 'x64-provider') } catch { Write-Error $_ }
 try { $items += @(Read-UninstallProviderPath -Path 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -Architecture 'x86-provider') } catch { Write-Error $_ }
+try { $items += @(Read-LoadedUserUninstallKeys) } catch { Write-Error $_ }
 try { $items += @(Read-ProgramsPackageProvider) } catch { Write-Error $_ }
+try { $items += @(Read-AppxPackagesAllUsers) } catch { Write-Error $_ }
 
 $items = @($items | Where-Object { $_ -and $_.DisplayName } | Sort-Object DisplayName, DisplayVersion, Publisher -Unique)
 
