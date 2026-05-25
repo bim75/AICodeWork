@@ -29,6 +29,32 @@ This is read-only. It does not install, update, uninstall, or modify software.
 
 Use this when you need inventory across Azure Windows VMs without RDP.
 
+### Step 1: get the script into Cloud Shell
+
+Fresh Cloud Shell starts in `~` and does not already contain this repo. Run one of these first.
+
+Recommended, clone the repo:
+
+```bash
+git clone https://github.com/bim75/AICodeWork.git
+cd AICodeWork
+```
+
+If you already cloned it earlier:
+
+```bash
+cd ~/AICodeWork
+git pull
+```
+
+No git clone option, download just the script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bim75/AICodeWork/main/azure-windows-software-inventory.sh -o azure-windows-software-inventory.sh
+```
+
+### Step 2: run the inventory
+
 ```bash
 chmod +x azure-windows-software-inventory.sh
 ./azure-windows-software-inventory.sh
