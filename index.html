@@ -318,6 +318,36 @@ done
 command -v az &gt;/dev/null 2&gt;&amp;1 || { echo &quot;ERROR: az CLI is required.&quot; &gt;&amp;2; exit 1; }
 command -v jq &gt;/dev/null 2&gt;&amp;1 || { echo &quot;ERROR: jq is required. Azure Cloud Shell includes jq.&quot; &gt;&amp;2; exit 1; }
 
+run_with_spinner() {
+  local message=&quot;$1&quot;
+  local output_file=&quot;$2&quot;
+  local err_file=&quot;$3&quot;
+  shift 3
+
+  local spin=&#x27;|/-\\&#x27;
+  local i=0
+  local elapsed=0
+  local pid
+
+  &quot;$@&quot; &gt; &quot;$output_file&quot; 2&gt; &quot;$err_file&quot; &amp;
+  pid=$!
+
+  while kill -0 &quot;$pid&quot; 2&gt;/dev/null; do
+    printf &#x27;\r%s %s elapsed: %ss&#x27; &quot;$message&quot; &quot;${spin:i++%${#spin}:1}&quot; &quot;$elapsed&quot; &gt;&amp;2
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  if wait &quot;$pid&quot;; then
+    printf &#x27;\r%s done in %ss.                    \n&#x27; &quot;$message&quot; &quot;$elapsed&quot; &gt;&amp;2
+    return 0
+  else
+    local rc=$?
+    printf &#x27;\r%s FAILED after %ss.                \n&#x27; &quot;$message&quot; &quot;$elapsed&quot; &gt;&amp;2
+    return &quot;$rc&quot;
+  fi
+}
+
 if { [[ -n &quot;$BLOB_ACCOUNT&quot; ]] &amp;&amp; [[ -z &quot;$BLOB_CONTAINER&quot; ]]; } || { [[ -z &quot;$BLOB_ACCOUNT&quot; ]] &amp;&amp; [[ -n &quot;$BLOB_CONTAINER&quot; ]]; }; then
   echo &quot;ERROR: --blob-account and --blob-container must be used together.&quot; &gt;&amp;2
   exit 2
@@ -343,7 +373,14 @@ choose_subscription_interactive() {
   local subs_json sub_count subs_table choice selected_id selected_name
 
   echo &quot;Discovering accessible Azure subscriptions and VM counts...&quot;
-  subs_json=&quot;$(az account list --all -o json)&quot;
+  local subs_file subs_err
+  subs_file=&quot;$TMP_DIR/az-account-list.json&quot;
+  subs_err=&quot;$TMP_DIR/az-account-list.err&quot;
+  if ! run_with_spinner &quot;Querying Azure subscriptions&quot; &quot;$subs_file&quot; &quot;$subs_err&quot; az account list --all -o json; then
+    echo &quot;ERROR: Could not list Azure subscriptions: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$subs_err&quot;)&quot; &gt;&amp;2
+    exit 1
+  fi
+  subs_json=&quot;$(cat &quot;$subs_file&quot;)&quot;
   sub_count=&quot;$(jq &#x27;length&#x27; &lt;&lt;&lt;&quot;$subs_json&quot;)&quot;
 
   if [[ &quot;$sub_count&quot; == &quot;0&quot; ]]; then
@@ -362,11 +399,17 @@ choose_subscription_interactive() {
 
     total_vms=&quot;ERR&quot;
     windows_vms=&quot;ERR&quot;
+    echo &quot;Checking subscription $((i + 1))/$sub_count: $name&quot;
     if az account set --subscription &quot;$id&quot; &gt;/dev/null 2&gt;&amp;1; then
-      local vm_summary
-      if vm_summary=&quot;$(az vm list -d -o json 2&gt;/dev/null | jq -r &#x27;[length, ([.[] | select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;)] | length)] | @tsv&#x27;)&quot;; then
+      local vm_summary vm_summary_file vm_summary_err
+      vm_summary_file=&quot;$TMP_DIR/subscription-${i}-vm-summary.tsv&quot;
+      vm_summary_err=&quot;$TMP_DIR/subscription-${i}-vm-summary.err&quot;
+      if run_with_spinner &quot;  Querying VM counts for $name&quot; &quot;$vm_summary_file&quot; &quot;$vm_summary_err&quot; bash -c &#x27;az vm list -d -o json | jq -r &#x27;\&#x27;&#x27;[length, ([.[] | select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;)] | length)] | @tsv&#x27;\&#x27;&#x27;&#x27;; then
+        vm_summary=&quot;$(cat &quot;$vm_summary_file&quot;)&quot;
         total_vms=&quot;$(awk &#x27;{print $1}&#x27; &lt;&lt;&lt;&quot;$vm_summary&quot;)&quot;
         windows_vms=&quot;$(awk &#x27;{print $2}&#x27; &lt;&lt;&lt;&quot;$vm_summary&quot;)&quot;
+      else
+        echo &quot;  WARN: VM count query failed for $name: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$vm_summary_err&quot;)&quot; &gt;&amp;2
       fi
     fi
 
@@ -408,7 +451,14 @@ choose_vm_interactive() {
   local all_vm_json windows_count vm_table choice selected
 
   echo &quot;Discovering Windows VMs in selected subscription...&quot;
-  all_vm_json=&quot;$(az vm list -d -o json)&quot;
+  local all_vm_file all_vm_err
+  all_vm_file=&quot;$TMP_DIR/selected-subscription-vms.json&quot;
+  all_vm_err=&quot;$TMP_DIR/selected-subscription-vms.err&quot;
+  if ! run_with_spinner &quot;Querying Windows VM list&quot; &quot;$all_vm_file&quot; &quot;$all_vm_err&quot; az vm list -d -o json; then
+    echo &quot;ERROR: Could not list VMs in selected subscription: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$all_vm_err&quot;)&quot; &gt;&amp;2
+    exit 1
+  fi
+  all_vm_json=&quot;$(cat &quot;$all_vm_file&quot;)&quot;
   windows_count=&quot;$(jq &#x27;[.[] | select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;)] | length&#x27; &lt;&lt;&lt;&quot;$all_vm_json&quot;)&quot;
 
   if [[ &quot;$windows_count&quot; == &quot;0&quot; ]]; then
@@ -551,13 +601,21 @@ if [[ -n &quot;$FILTER_VM_NAME&quot; || -n &quot;$FILTER_RG&quot; ]]; then
     echo &quot;ERROR: --vm-name and --resource-group must be used together.&quot; &gt;&amp;2
     exit 2
   fi
-  az vm show -g &quot;$FILTER_RG&quot; -n &quot;$FILTER_VM_NAME&quot; -d -o json | jq -c &#x27;select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;) | {
+  if ! run_with_spinner &quot;Querying selected VM details&quot; &quot;$VM_JSON.tmp&quot; &quot;$TMP_DIR/selected-vm.err&quot; bash -c &#x27;az vm show -g &quot;$1&quot; -n &quot;$2&quot; -d -o json | jq -c &#x27;\&#x27;&#x27;select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;) | {
     subscriptionId: .id | split(&quot;/&quot;)[2], resourceGroup: .resourceGroup, name: .name, location: .location,
     vmId: .vmId, powerState: (.powerState // &quot;unknown&quot;), size: .hardwareProfile.vmSize,
     osType: .storageProfile.osDisk.osType, computerName: (.osProfile.computerName // &quot;&quot;), id: .id
-  }&#x27; &gt; &quot;$VM_JSON&quot;
+  }&#x27;\&#x27;&#x27;&#x27; _ &quot;$FILTER_RG&quot; &quot;$FILTER_VM_NAME&quot;; then
+    echo &quot;ERROR: Could not query selected VM details: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$TMP_DIR/selected-vm.err&quot;)&quot; &gt;&amp;2
+    exit 1
+  fi
+  mv &quot;$VM_JSON.tmp&quot; &quot;$VM_JSON&quot;
 else
-  az vm list -d -o json | jq -c &quot;$VM_QUERY&quot; &gt; &quot;$VM_JSON&quot;
+  if ! run_with_spinner &quot;Querying Windows VM list&quot; &quot;$VM_JSON.tmp&quot; &quot;$TMP_DIR/windows-vms.err&quot; bash -c &#x27;az vm list -d -o json | jq -c &quot;$1&quot;&#x27; _ &quot;$VM_QUERY&quot;; then
+    echo &quot;ERROR: Could not query Windows VM list: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$TMP_DIR/windows-vms.err&quot;)&quot; &gt;&amp;2
+    exit 1
+  fi
+  mv &quot;$VM_JSON.tmp&quot; &quot;$VM_JSON&quot;
 fi
 
 VM_COUNT=$(wc -l &lt; &quot;$VM_JSON&quot; | tr -d &#x27; &#x27;)
@@ -594,6 +652,7 @@ collect_vm() {
     return 0
   fi
 
+  echo &quot;START $rg/$vm - invoking Azure Run Command to read installed software...&quot; &gt;&amp;2
   if ! az vm run-command invoke \
       --subscription &quot;$sub&quot; \
       --resource-group &quot;$rg&quot; \
