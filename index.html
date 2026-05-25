@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Azure Windows VM Software Inventory - Phase 1</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#121a2f; --panel2:#17213b; --text:#ecf2ff; --muted:#aab7d6; --accent:#7dd3fc; --good:#86efac; --warn:#fde68a; --border:#293554; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:linear-gradient(180deg,#08101f,#0b1020 40%,#090d18); color:var(--text); line-height:1.55; }
+    header { padding:56px 24px 28px; border-bottom:1px solid var(--border); background:radial-gradient(circle at top left, rgba(125,211,252,.18), transparent 34%), var(--bg); }
+    main { max-width:1100px; margin:0 auto; padding:28px 20px 70px; }
+    .hero { max-width:1100px; margin:0 auto; }
+    h1 { margin:0 0 12px; font-size:clamp(2rem,5vw,4rem); line-height:1.03; letter-spacing:-.04em; }
+    h2 { margin-top:36px; border-top:1px solid var(--border); padding-top:28px; font-size:1.55rem; }
+    h3 { margin-top:22px; color:#dbeafe; }
+    p, li { color:var(--muted); }
+    strong { color:var(--text); }
+    .badge { display:inline-flex; gap:8px; align-items:center; color:#06111f; background:var(--good); padding:6px 10px; border-radius:999px; font-weight:700; font-size:.9rem; margin-bottom:18px; }
+    .card { background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--border); border-radius:18px; padding:20px; margin:18px 0; box-shadow:0 12px 35px rgba(0,0,0,.24); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; }
+    code { color:#e0f2fe; }
+    pre { position:relative; background:#050814; color:#e6edf7; border:1px solid #263450; border-radius:14px; padding:16px; overflow:auto; white-space:pre; font-size:.92rem; }
+    .copy { position:absolute; top:8px; right:8px; border:1px solid #385177; background:#111b31; color:#e6edf7; border-radius:10px; padding:6px 10px; cursor:pointer; font-weight:700; }
+    .copy:hover { background:#1e2c4a; }
+    .note { border-left:4px solid var(--accent); padding:12px 14px; background:rgba(125,211,252,.08); border-radius:10px; color:var(--muted); }
+    .warn { border-left-color:var(--warn); background:rgba(253,230,138,.08); }
+    a { color:var(--accent); }
+    .toc a { display:block; padding:6px 0; }
+    table { width:100%; border-collapse:collapse; overflow:hidden; border-radius:12px; }
+    th,td { border-bottom:1px solid var(--border); padding:10px; text-align:left; color:var(--muted); }
+    th { color:var(--text); background:#111a30; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <div class="badge">READ-ONLY PHASE 1</div>
+      <h1>Azure Windows VM Software Inventory</h1>
+      <p>This guide walks you from zero to a CSV report of installed software on Azure Windows VMs using Azure Cloud Shell. It prompts you to choose a subscription, then choose all Windows VMs or one specific VM.</p>
+    </div>
+  </header>
+  <main>
+    <section class="card toc">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Quick links</h2>
+      <a href="#what-it-does">What this does</a>
+      <a href="#start">Start from Azure Cloud Shell</a>
+      <a href="#run">Run the inventory</a>
+      <a href="#outputs">Find/download the report files</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+      <a href="#github-pages">Publish this guide on GitHub Pages</a>
+      <a href="#blob-storage">Optional Azure Blob report storage</a>
+      <a href="#full-script">Full script</a>
+    </section>
+
+    <section id="what-it-does" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">What this does</h2>
+      <div class="grid">
+        <div><strong>1. Lists subscriptions</strong><p>Shows every accessible subscription with total VM count and Windows VM count.</p></div>
+        <div><strong>2. Prompts for target</strong><p>You choose a subscription, then choose all Windows VMs or one VM.</p></div>
+        <div><strong>3. Inventories software</strong><p>Uses Azure VM Run Command to read Windows uninstall registry keys.</p></div>
+        <div><strong>4. Exports reports</strong><p>Creates CSV and JSONL files for reporting.</p></div>
+      </div>
+      <p class="note warn"><strong>Safety:</strong> this phase is read-only. It does not check updates, download software, install software, reboot machines, or change VM configuration.</p>
+    </section>
+
+    <section id="start" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Start from the very beginning</h2>
+      <ol>
+        <li>Open the Azure Portal: <a href="https://portal.azure.com" target="_blank">https://portal.azure.com</a></li>
+        <li>Click the Cloud Shell icon in the top bar.</li>
+        <li>Choose <strong>Bash</strong>, not PowerShell.</li>
+        <li>If Cloud Shell asks you to create storage, accept the default setup.</li>
+        <li>Paste the commands below.</li>
+      </ol>
+      <h3>Download the script into Cloud Shell</h3>
+      <pre><button class="copy">Copy</button><code>curl -L -o azure-windows-software-inventory.sh https://8afbd6a7d8153e.lhr.life/azure-windows-software-inventory.sh
+chmod +x azure-windows-software-inventory.sh</code></pre>
+      <p class="note">If the temporary URL ever changes, open the guide page and copy the updated command from this section.</p>
+    </section>
+
+    <section id="run" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Run the inventory</h2>
+      <h3>Interactive mode, recommended</h3>
+      <pre><button class="copy">Copy</button><code>./azure-windows-software-inventory.sh</code></pre>
+      <p>The script will show subscriptions like this:</p>
+      <pre><button class="copy">Copy</button><code>Available subscriptions:
+    #  Subscription                                State           All VMs  Windows VMs
+  ---  ------------------------------------------  ------------  ---------  -----------
+    1  Production Subscription                     Enabled              12            8
+    2  Test Subscription                           Enabled               3            2
+
+Choose subscription number: 1</code></pre>
+      <p>Then it will show Windows VMs like this:</p>
+      <pre><button class="copy">Copy</button><code>Windows VMs:
+    #  VM Name                           Resource Group                Power State      Size           Location
+  ---  --------------------------------  ----------------------------  ---------------- -------------- ------------
+    1  app-server-01                     rg-prod-apps                  VM running       Standard_D4s_v5 eastus
+    2  sql-server-01                     rg-prod-sql                   VM running       Standard_D8s_v5 eastus
+
+Choose what to inventory:
+  0 = all Windows VMs listed above
+  1-2 = one specific VM
+
+Choose VM number, or 0 for all:</code></pre>
+
+      <h3>Safer first test: one VM only</h3>
+      <p>Run interactive mode and choose one VM first. Confirm the report looks good. Then rerun and choose 0 for all Windows VMs.</p>
+
+      <h3>Optional non-interactive examples</h3>
+      <pre><button class="copy">Copy</button><code># Inventory all Windows VMs in a known subscription
+./azure-windows-software-inventory.sh   --subscription "SUBSCRIPTION_ID_OR_NAME"   --all-vms</code></pre>
+      <pre><button class="copy">Copy</button><code># Inventory one known VM
+./azure-windows-software-inventory.sh   --subscription "SUBSCRIPTION_ID_OR_NAME"   --resource-group "RESOURCE_GROUP_NAME"   --vm-name "VM_NAME"</code></pre>
+      <pre><button class="copy">Copy</button><code># Slow/conservative run: process one VM at a time
+./azure-windows-software-inventory.sh --parallel 1</code></pre>
+    </section>
+
+    <section id="outputs" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Report files</h2>
+      <p>Each run creates a timestamped folder:</p>
+      <pre><button class="copy">Copy</button><code>./inventory-output/YYYYMMDDTHHMMSSZ/</code></pre>
+      <table>
+        <tr><th>File</th><th>Purpose</th></tr>
+        <tr><td>windows-vms.csv</td><td>List of discovered Windows VMs.</td></tr>
+        <tr><td>software-inventory.csv</td><td>Main report: installed software with version, publisher, install date, etc.</td></tr>
+        <tr><td>software-inventory.jsonl</td><td>Machine-readable line-delimited JSON copy of the software report.</td></tr>
+        <tr><td>errors.log</td><td>Skipped VMs, Run Command failures, parsing errors, or warnings.</td></tr>
+      </table>
+      <h3>Show your newest output folder</h3>
+      <pre><button class="copy">Copy</button><code>latest_dir=$(ls -td ./inventory-output/*/ | head -1)
+echo "$latest_dir"</code></pre>
+      <h3>Preview the software CSV</h3>
+      <pre><button class="copy">Copy</button><code>latest_dir=$(ls -td ./inventory-output/*/ | head -1)
+head -n 20 "$latest_dir/software-inventory.csv"</code></pre>
+      <h3>Create a zip to download from Cloud Shell</h3>
+      <pre><button class="copy">Copy</button><code>latest_dir=$(ls -td ./inventory-output/*/ | head -1)
+zip -r azure-windows-software-inventory-report.zip "$latest_dir"</code></pre>
+      <p>Then use the Cloud Shell file menu to download <code>azure-windows-software-inventory-report.zip</code>.</p>
+    </section>
+
+
+
+    <section id="blob-storage" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Optional Azure Blob report storage</h2>
+      <p>Yes — using Azure Blob Storage for report output is a good idea if Cloud Shell storage feels cramped, if you want durable centralized reports, or if several people need access to the results.</p>
+      <p class="note warn"><strong>Security note:</strong> these reports list VM names and installed software. Treat the storage container as private. Do not enable public blob access.</p>
+      <h3>Create a storage account and private container</h3>
+      <pre><button class="copy">Copy</button><code># Change these names before running. Storage account names must be globally unique.
+RG="rg-vm-inventory-reports"
+LOCATION="eastus"
+STORAGE_ACCOUNT="vminventory$RANDOM$RANDOM"
+CONTAINER="reports"
+
+az group create --name "$RG" --location "$LOCATION"
+az storage account create \
+  --resource-group "$RG" \
+  --name "$STORAGE_ACCOUNT" \
+  --location "$LOCATION" \
+  --sku Standard_LRS \
+  --kind StorageV2 \
+  --allow-blob-public-access false \
+  --min-tls-version TLS1_2
+
+az storage container create \
+  --account-name "$STORAGE_ACCOUNT" \
+  --name "$CONTAINER" \
+  --auth-mode login
+
+echo "Storage account: $STORAGE_ACCOUNT"
+echo "Container:       $CONTAINER"</code></pre>
+      <h3>Run the inventory and upload results to Blob</h3>
+      <pre><button class="copy">Copy</button><code>./azure-windows-software-inventory.sh \
+  --blob-account "$STORAGE_ACCOUNT" \
+  --blob-container "$CONTAINER"</code></pre>
+      <p>The script still writes local Cloud Shell files first, then uploads the timestamped report folder to:</p>
+      <pre><button class="copy">Copy</button><code>https://$STORAGE_ACCOUNT.blob.core.windows.net/$CONTAINER/azure-windows-software-inventory/YYYYMMDDTHHMMSSZ/</code></pre>
+      <h3>If upload permissions fail</h3>
+      <p>You may need Storage Blob Data Contributor on the storage account/container:</p>
+      <pre><button class="copy">Copy</button><code>USER_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+SCOPE=$(az storage account show \
+  --resource-group "$RG" \
+  --name "$STORAGE_ACCOUNT" \
+  --query id -o tsv)
+
+az role assignment create \
+  --assignee "$USER_OBJECT_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "$SCOPE"</code></pre>
+    </section>
+
+    <section id="github-pages" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Publish this guide on GitHub Pages</h2>
+      <p>GitHub Pages is the better permanent home for this guide. The current localhost.run URL is temporary; GitHub Pages will survive after this agent session ends.</p>
+      <h3>Simple browser method</h3>
+      <ol>
+        <li>Open your GitHub Pages repository in GitHub.</li>
+        <li>Add or upload these two files at the repository root, or in the <code>docs/</code> folder if your Pages site uses docs.</li>
+        <li><code>index.html</code></li>
+        <li><code>azure-windows-software-inventory.sh</code></li>
+        <li>Commit the changes.</li>
+        <li>In repository settings, ensure Pages is enabled for the correct branch/folder.</li>
+      </ol>
+      <h3>Command-line method if you have the repo cloned</h3>
+      <pre><button class="copy">Copy</button><code># From your GitHub Pages repo working copy:
+cp /path/to/index.html ./index.html
+cp /path/to/azure-windows-software-inventory.sh ./azure-windows-software-inventory.sh
+
+git add index.html azure-windows-software-inventory.sh
+git commit -m "Add Azure Windows VM software inventory guide"
+git push</code></pre>
+      <p class="note">I can publish this directly for you once GitHub auth is available in this environment or you give me the exact repository URL and a safe temporary token. Right now this environment does not have <code>gh</code> or <code>GITHUB_TOKEN</code> configured.</p>
+    </section>
+
+    <section id="requirements" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Permissions and requirements</h2>
+      <ul>
+        <li>You need permission to list subscriptions and VMs.</li>
+        <li>You need permission to run <code>az vm run-command invoke</code> on selected VMs.</li>
+        <li>The Windows VM must be running.</li>
+        <li>The Azure VM Agent must be installed and healthy.</li>
+        <li>No inbound RDP/WinRM/firewall opening is required.</li>
+      </ul>
+    </section>
+
+    <section id="troubleshooting" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Troubleshooting</h2>
+      <h3>No subscriptions listed</h3>
+      <pre><button class="copy">Copy</button><code>az login
+az account list -o table</code></pre>
+      <h3>Run Command fails</h3>
+      <ul>
+        <li>Check that the VM is running.</li>
+        <li>Check Azure VM Agent health.</li>
+        <li>Check your RBAC permissions.</li>
+        <li>Open the generated <code>errors.log</code>.</li>
+      </ul>
+      <h3>Some software is missing</h3>
+      <p>This phase reads machine-level uninstall registry keys. It may not catch portable apps, per-user installs, Microsoft Store apps, or apps that do not register uninstall metadata.</p>
+    </section>
+
+    <section id="next" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Next phases, not included yet</h2>
+      <ol>
+        <li><strong>Phase 2:</strong> determine update availability only. No downloads, no installs.</li>
+        <li><strong>Phase 3:</strong> test downloads/installers on selected non-production VMs.</li>
+        <li><strong>Phase 4:</strong> controlled deployment with allowlists, maintenance windows, backups/snapshots, and rollback.</li>
+      </ol>
+      <p class="note warn">Do not auto-update every software title found. Later phases should use an allowlist so business-critical software, agents, drivers, SQL Server, and line-of-business apps are not touched without explicit approval.</p>
+    </section>
+
+    <section id="full-script" class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Full script</h2>
+      <p>You can copy this whole script manually if you prefer not to use curl.</p>
+      <pre><button class="copy">Copy</button><code>#!/usr/bin/env bash
+set -euo pipefail
+
+# Azure Windows VM Software Inventory - Phase 1 (read-only)
+# Runs from Azure Cloud Shell Bash or any machine with Azure CLI + jq.
+# Produces:
+#   ./inventory-output/&lt;timestamp&gt;/windows-vms.csv
+#   ./inventory-output/&lt;timestamp&gt;/software-inventory.csv
+#   ./inventory-output/&lt;timestamp&gt;/software-inventory.jsonl
+#   ./inventory-output/&lt;timestamp&gt;/errors.log
+#
+# Usage:
+#   chmod +x azure-windows-software-inventory.sh
+#   ./azure-windows-software-inventory.sh
+#
+# Default behavior is interactive:
+#   1. Lists every accessible subscription with total VM count and Windows VM count.
+#   2. Prompts you to choose a subscription by number.
+#   3. Lists Windows VMs in that subscription.
+#   4. Prompts you to choose all Windows VMs or one specific VM by number.
+#
+# Optional non-interactive flags:
+#   ./azure-windows-software-inventory.sh --subscription &lt;subscription-id-or-name&gt;
+#   ./azure-windows-software-inventory.sh --output-dir ./my-report
+#   ./azure-windows-software-inventory.sh --parallel 3
+#   ./azure-windows-software-inventory.sh --vm-name MyVm --resource-group MyRg
+#   ./azure-windows-software-inventory.sh --all-vms
+#   ./azure-windows-software-inventory.sh --non-interactive
+#   ./azure-windows-software-inventory.sh --blob-account &lt;storageaccount&gt; --blob-container &lt;container&gt;
+
+SUBSCRIPTION=&quot;&quot;
+OUTPUT_ROOT=&quot;./inventory-output&quot;
+PARALLEL=3
+FILTER_VM_NAME=&quot;&quot;
+FILTER_RG=&quot;&quot;
+ALL_VMS=&quot;&quot;
+NON_INTERACTIVE=&quot;&quot;
+BLOB_ACCOUNT=&quot;&quot;
+BLOB_CONTAINER=&quot;&quot;
+BLOB_PREFIX=&quot;azure-windows-software-inventory&quot;
+
+while [[ $# -gt 0 ]]; do
+  case &quot;$1&quot; in
+    --subscription)
+      SUBSCRIPTION=&quot;$2&quot;; shift 2 ;;
+    --output-dir)
+      OUTPUT_ROOT=&quot;$2&quot;; shift 2 ;;
+    --parallel)
+      PARALLEL=&quot;$2&quot;; shift 2 ;;
+    --vm-name)
+      FILTER_VM_NAME=&quot;$2&quot;; shift 2 ;;
+    --resource-group)
+      FILTER_RG=&quot;$2&quot;; shift 2 ;;
+    --all-vms)
+      ALL_VMS=&quot;1&quot;; shift ;;
+    --non-interactive)
+      NON_INTERACTIVE=&quot;1&quot;; shift ;;
+    --blob-account)
+      BLOB_ACCOUNT=&quot;$2&quot;; shift 2 ;;
+    --blob-container)
+      BLOB_CONTAINER=&quot;$2&quot;; shift 2 ;;
+    --blob-prefix)
+      BLOB_PREFIX=&quot;$2&quot;; shift 2 ;;
+    -h|--help)
+      sed -n &#x27;1,55p&#x27; &quot;$0&quot;; exit 0 ;;
+    *)
+      echo &quot;Unknown argument: $1&quot; &gt;&amp;2; exit 2 ;;
+  esac
+done
+
+command -v az &gt;/dev/null 2&gt;&amp;1 || { echo &quot;ERROR: az CLI is required.&quot; &gt;&amp;2; exit 1; }
+command -v jq &gt;/dev/null 2&gt;&amp;1 || { echo &quot;ERROR: jq is required. Azure Cloud Shell includes jq.&quot; &gt;&amp;2; exit 1; }
+
+if { [[ -n &quot;$BLOB_ACCOUNT&quot; ]] &amp;&amp; [[ -z &quot;$BLOB_CONTAINER&quot; ]]; } || { [[ -z &quot;$BLOB_ACCOUNT&quot; ]] &amp;&amp; [[ -n &quot;$BLOB_CONTAINER&quot; ]]; }; then
+  echo &quot;ERROR: --blob-account and --blob-container must be used together.&quot; &gt;&amp;2
+  exit 2
+fi
+
+prompt_number() {
+  local prompt=&quot;$1&quot;
+  local min=&quot;$2&quot;
+  local max=&quot;$3&quot;
+  local answer=&quot;&quot;
+
+  while true; do
+    read -r -p &quot;$prompt&quot; answer
+    if [[ &quot;$answer&quot; =~ ^[0-9]+$ ]] &amp;&amp; (( answer &gt;= min &amp;&amp; answer &lt;= max )); then
+      printf &#x27;%s\n&#x27; &quot;$answer&quot;
+      return 0
+    fi
+    echo &quot;Please enter a number from $min to $max.&quot; &gt;&amp;2
+  done
+}
+
+choose_subscription_interactive() {
+  local subs_json sub_count subs_table choice selected_id selected_name
+
+  echo &quot;Discovering accessible Azure subscriptions and VM counts...&quot;
+  subs_json=&quot;$(az account list --all -o json)&quot;
+  sub_count=&quot;$(jq &#x27;length&#x27; &lt;&lt;&lt;&quot;$subs_json&quot;)&quot;
+
+  if [[ &quot;$sub_count&quot; == &quot;0&quot; ]]; then
+    echo &quot;ERROR: No Azure subscriptions are available to this account.&quot; &gt;&amp;2
+    exit 1
+  fi
+
+  subs_table=&quot;$TMP_DIR/subscriptions.jsonl&quot;
+  : &gt; &quot;$subs_table&quot;
+
+  for i in $(seq 0 $((sub_count - 1))); do
+    local id name state total_vms windows_vms
+    id=&quot;$(jq -r &quot;.[$i].id&quot; &lt;&lt;&lt;&quot;$subs_json&quot;)&quot;
+    name=&quot;$(jq -r &quot;.[$i].name&quot; &lt;&lt;&lt;&quot;$subs_json&quot;)&quot;
+    state=&quot;$(jq -r &quot;.[$i].state&quot; &lt;&lt;&lt;&quot;$subs_json&quot;)&quot;
+
+    total_vms=&quot;ERR&quot;
+    windows_vms=&quot;ERR&quot;
+    if az account set --subscription &quot;$id&quot; &gt;/dev/null 2&gt;&amp;1; then
+      local vm_summary
+      if vm_summary=&quot;$(az vm list -d -o json 2&gt;/dev/null | jq -r &#x27;[length, ([.[] | select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;)] | length)] | @tsv&#x27;)&quot;; then
+        total_vms=&quot;$(awk &#x27;{print $1}&#x27; &lt;&lt;&lt;&quot;$vm_summary&quot;)&quot;
+        windows_vms=&quot;$(awk &#x27;{print $2}&#x27; &lt;&lt;&lt;&quot;$vm_summary&quot;)&quot;
+      fi
+    fi
+
+    jq -n -c \
+      --arg id &quot;$id&quot; \
+      --arg name &quot;$name&quot; \
+      --arg state &quot;$state&quot; \
+      --arg totalVms &quot;$total_vms&quot; \
+      --arg windowsVms &quot;$windows_vms&quot; \
+      &#x27;{id:$id,name:$name,state:$state,totalVms:$totalVms,windowsVms:$windowsVms}&#x27; &gt;&gt; &quot;$subs_table&quot;
+  done
+
+  echo &quot;&quot;
+  echo &quot;Available subscriptions:&quot;
+  printf &#x27;  %3s  %-42s  %-12s  %9s  %11s\n&#x27; &quot;#&quot; &quot;Subscription&quot; &quot;State&quot; &quot;All VMs&quot; &quot;Windows VMs&quot;
+  printf &#x27;  %3s  %-42s  %-12s  %9s  %11s\n&#x27; &quot;---&quot; &quot;------------------------------------------&quot; &quot;------------&quot; &quot;---------&quot; &quot;-----------&quot;
+
+  local idx=1
+  while IFS= read -r line; do
+    local name state total_vms windows_vms
+    name=&quot;$(jq -r &#x27;.name&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    state=&quot;$(jq -r &#x27;.state&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    total_vms=&quot;$(jq -r &#x27;.totalVms&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    windows_vms=&quot;$(jq -r &#x27;.windowsVms&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    printf &#x27;  %3d  %-42.42s  %-12.12s  %9s  %11s\n&#x27; &quot;$idx&quot; &quot;$name&quot; &quot;$state&quot; &quot;$total_vms&quot; &quot;$windows_vms&quot;
+    idx=$((idx + 1))
+  done &lt; &quot;$subs_table&quot;
+
+  echo &quot;&quot;
+  choice=&quot;$(prompt_number &quot;Choose subscription number: &quot; 1 &quot;$sub_count&quot;)&quot;
+  selected_id=&quot;$(sed -n &quot;${choice}p&quot; &quot;$subs_table&quot; | jq -r &#x27;.id&#x27;)&quot;
+  selected_name=&quot;$(sed -n &quot;${choice}p&quot; &quot;$subs_table&quot; | jq -r &#x27;.name&#x27;)&quot;
+  echo &quot;Selected subscription: $selected_name ($selected_id)&quot;
+  SUBSCRIPTION=&quot;$selected_id&quot;
+  az account set --subscription &quot;$SUBSCRIPTION&quot;
+}
+
+choose_vm_interactive() {
+  local all_vm_json windows_count vm_table choice selected
+
+  echo &quot;Discovering Windows VMs in selected subscription...&quot;
+  all_vm_json=&quot;$(az vm list -d -o json)&quot;
+  windows_count=&quot;$(jq &#x27;[.[] | select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;)] | length&#x27; &lt;&lt;&lt;&quot;$all_vm_json&quot;)&quot;
+
+  if [[ &quot;$windows_count&quot; == &quot;0&quot; ]]; then
+    echo &quot;No Windows VMs found in selected subscription.&quot;
+    exit 0
+  fi
+
+  vm_table=&quot;$TMP_DIR/interactive-windows-vms.jsonl&quot;
+  jq -c &quot;$VM_QUERY&quot; &lt;&lt;&lt;&quot;$all_vm_json&quot; &gt; &quot;$vm_table&quot;
+
+  echo &quot;&quot;
+  echo &quot;Windows VMs:&quot;
+  printf &#x27;  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n&#x27; &quot;#&quot; &quot;VM Name&quot; &quot;Resource Group&quot; &quot;Power State&quot; &quot;Size&quot; &quot;Location&quot;
+  printf &#x27;  %3s  %-32s  %-28s  %-16s  %-14s  %-12s\n&#x27; &quot;---&quot; &quot;--------------------------------&quot; &quot;----------------------------&quot; &quot;----------------&quot; &quot;--------------&quot; &quot;------------&quot;
+
+  local idx=1
+  while IFS= read -r line; do
+    local name rg power size loc
+    name=&quot;$(jq -r &#x27;.name&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    rg=&quot;$(jq -r &#x27;.resourceGroup&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    power=&quot;$(jq -r &#x27;.powerState&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    size=&quot;$(jq -r &#x27;.size&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    loc=&quot;$(jq -r &#x27;.location&#x27; &lt;&lt;&lt;&quot;$line&quot;)&quot;
+    printf &#x27;  %3d  %-32.32s  %-28.28s  %-16.16s  %-14.14s  %-12.12s\n&#x27; &quot;$idx&quot; &quot;$name&quot; &quot;$rg&quot; &quot;$power&quot; &quot;$size&quot; &quot;$loc&quot;
+    idx=$((idx + 1))
+  done &lt; &quot;$vm_table&quot;
+
+  echo &quot;&quot;
+  echo &quot;Choose what to inventory:&quot;
+  echo &quot;  0 = all Windows VMs listed above&quot;
+  echo &quot;  1-$windows_count = one specific VM&quot;
+  choice=&quot;$(prompt_number &quot;Choose VM number, or 0 for all: &quot; 0 &quot;$windows_count&quot;)&quot;
+
+  if [[ &quot;$choice&quot; == &quot;0&quot; ]]; then
+    echo &quot;Selected: all Windows VMs&quot;
+    ALL_VMS=&quot;1&quot;
+    FILTER_VM_NAME=&quot;&quot;
+    FILTER_RG=&quot;&quot;
+  else
+    selected=&quot;$(sed -n &quot;${choice}p&quot; &quot;$vm_table&quot;)&quot;
+    FILTER_VM_NAME=&quot;$(jq -r &#x27;.name&#x27; &lt;&lt;&lt;&quot;$selected&quot;)&quot;
+    FILTER_RG=&quot;$(jq -r &#x27;.resourceGroup&#x27; &lt;&lt;&lt;&quot;$selected&quot;)&quot;
+    echo &quot;Selected VM: $FILTER_RG/$FILTER_VM_NAME&quot;
+  fi
+}
+
+# For interactive selection we need TMP_DIR before the normal output directory is announced.
+TS=&quot;$(date -u +%Y%m%dT%H%M%SZ)&quot;
+OUT_DIR=&quot;$OUTPUT_ROOT/$TS&quot;
+mkdir -p &quot;$OUT_DIR&quot;
+TMP_DIR=&quot;$OUT_DIR/tmp&quot;
+mkdir -p &quot;$TMP_DIR&quot;
+
+if [[ -z &quot;$SUBSCRIPTION&quot; &amp;&amp; -z &quot;$NON_INTERACTIVE&quot; ]]; then
+  choose_subscription_interactive
+elif [[ -n &quot;$SUBSCRIPTION&quot; ]]; then
+  az account set --subscription &quot;$SUBSCRIPTION&quot;
+fi
+
+VM_CSV=&quot;$OUT_DIR/windows-vms.csv&quot;
+SOFTWARE_CSV=&quot;$OUT_DIR/software-inventory.csv&quot;
+SOFTWARE_JSONL=&quot;$OUT_DIR/software-inventory.jsonl&quot;
+ERROR_LOG=&quot;$OUT_DIR/errors.log&quot;
+: &gt; &quot;$ERROR_LOG&quot;
+: &gt; &quot;$SOFTWARE_JSONL&quot;
+
+echo &quot;Starting Windows VM/software inventory at $TS UTC&quot;
+echo &quot;Output directory: $OUT_DIR&quot;
+
+# PowerShell that runs inside each Windows VM via Azure Run Command.
+# Read-only: queries uninstall registry keys only. No package install/update actions.
+read -r -d &#x27;&#x27; GUEST_PS &lt;&lt;&#x27;EOF&#x27; || true
+$ErrorActionPreference = &#x27;Continue&#x27;
+$paths = @(
+  &#x27;HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*&#x27;,
+  &#x27;HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*&#x27;
+)
+
+$items = foreach ($path in $paths) {
+  Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -and $_.DisplayName.Trim().Length -gt 0 } |
+    ForEach-Object {
+      $installDateRaw = $null
+      $installDateIso = $null
+      if ($_.InstallDate) {
+        $installDateRaw = [string]$_.InstallDate
+        if ($installDateRaw -match &#x27;^\d{8}$&#x27;) {
+          try {
+            $installDateIso = ([datetime]::ParseExact($installDateRaw, &#x27;yyyyMMdd&#x27;, $null)).ToString(&#x27;yyyy-MM-dd&#x27;)
+          } catch { $installDateIso = $null }
+        }
+      }
+
+      [PSCustomObject]@{
+        ComputerName      = $env:COMPUTERNAME
+        DisplayName       = [string]$_.DisplayName
+        DisplayVersion    = [string]$_.DisplayVersion
+        Publisher         = [string]$_.Publisher
+        InstallDateRaw    = $installDateRaw
+        InstallDate       = $installDateIso
+        InstallLocation   = [string]$_.InstallLocation
+        UninstallString   = [string]$_.UninstallString
+        QuietUninstallString = [string]$_.QuietUninstallString
+        RegistryKey       = [string]$_.PSChildName
+        RegistryPath      = [string]$_.PSPath
+        Architecture      = if ($_.PSPath -like &#x27;*WOW6432Node*&#x27;) { &#x27;x86&#x27; } else { &#x27;x64&#x27; }
+      }
+    }
+}
+
+# Deduplicate common duplicate registry entries.
+$items |
+  Sort-Object DisplayName, DisplayVersion, Publisher, Architecture -Unique |
+  ConvertTo-Json -Depth 4 -Compress
+EOF
+
+# Discover Windows VMs. az vm list is used to avoid requiring Resource Graph extension.
+VM_QUERY=&#x27;.[] | select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;) | {
+  subscriptionId: .id | split(&quot;/&quot;)[2],
+  resourceGroup: .resourceGroup,
+  name: .name,
+  location: .location,
+  vmId: .vmId,
+  powerState: (.powerState // &quot;unknown&quot;),
+  size: .hardwareProfile.vmSize,
+  osType: .storageProfile.osDisk.osType,
+  computerName: (.osProfile.computerName // &quot;&quot;),
+  id: .id
+}&#x27;
+
+if [[ -z &quot;$FILTER_VM_NAME&quot; &amp;&amp; -z &quot;$FILTER_RG&quot; &amp;&amp; -z &quot;$ALL_VMS&quot; &amp;&amp; -z &quot;$NON_INTERACTIVE&quot; ]]; then
+  choose_vm_interactive
+fi
+
+VM_JSON=&quot;$TMP_DIR/windows-vms.jsonl&quot;
+: &gt; &quot;$VM_JSON&quot;
+
+if [[ -n &quot;$FILTER_VM_NAME&quot; || -n &quot;$FILTER_RG&quot; ]]; then
+  if [[ -z &quot;$FILTER_VM_NAME&quot; || -z &quot;$FILTER_RG&quot; ]]; then
+    echo &quot;ERROR: --vm-name and --resource-group must be used together.&quot; &gt;&amp;2
+    exit 2
+  fi
+  az vm show -g &quot;$FILTER_RG&quot; -n &quot;$FILTER_VM_NAME&quot; -d -o json | jq -c &#x27;select((.storageProfile.osDisk.osType // &quot;&quot;) == &quot;Windows&quot;) | {
+    subscriptionId: .id | split(&quot;/&quot;)[2], resourceGroup: .resourceGroup, name: .name, location: .location,
+    vmId: .vmId, powerState: (.powerState // &quot;unknown&quot;), size: .hardwareProfile.vmSize,
+    osType: .storageProfile.osDisk.osType, computerName: (.osProfile.computerName // &quot;&quot;), id: .id
+  }&#x27; &gt; &quot;$VM_JSON&quot;
+else
+  az vm list -d -o json | jq -c &quot;$VM_QUERY&quot; &gt; &quot;$VM_JSON&quot;
+fi
+
+VM_COUNT=$(wc -l &lt; &quot;$VM_JSON&quot; | tr -d &#x27; &#x27;)
+if [[ &quot;$VM_COUNT&quot; == &quot;0&quot; ]]; then
+  echo &quot;No Windows VMs found in current subscription/context.&quot;
+  exit 0
+fi
+
+jq -r &#x27;[&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&quot;,&quot;Location&quot;,&quot;PowerState&quot;,&quot;Size&quot;,&quot;OSType&quot;,&quot;ComputerName&quot;,&quot;ResourceId&quot;],
+  (inputs | [.subscriptionId,.resourceGroup,.name,.location,.powerState,.size,.osType,.computerName,.id]) | @csv&#x27; &lt; &quot;$VM_JSON&quot; &gt; &quot;$VM_CSV&quot;
+
+echo &quot;Found $VM_COUNT Windows VM(s). VM list written to: $VM_CSV&quot;
+echo &quot;Collecting installed software via az vm run-command invoke...&quot;
+
+collect_vm() {
+  local line=&quot;$1&quot;
+  local sub rg vm loc power size os computer id safe output_file software_file err_file
+  sub=$(jq -r &#x27;.subscriptionId&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  rg=$(jq -r &#x27;.resourceGroup&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  vm=$(jq -r &#x27;.name&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  loc=$(jq -r &#x27;.location&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  power=$(jq -r &#x27;.powerState&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  size=$(jq -r &#x27;.size&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  os=$(jq -r &#x27;.osType&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  computer=$(jq -r &#x27;.computerName&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  id=$(jq -r &#x27;.id&#x27; &lt;&lt;&lt;&quot;$line&quot;)
+  safe=$(printf &#x27;%s__%s&#x27; &quot;$rg&quot; &quot;$vm&quot; | tr -c &#x27;A-Za-z0-9_.-&#x27; &#x27;_&#x27;)
+  output_file=&quot;$TMP_DIR/${safe}.runcommand.json&quot;
+  software_file=&quot;$TMP_DIR/${safe}.software.json&quot;
+  err_file=&quot;$TMP_DIR/${safe}.error&quot;
+
+  if [[ &quot;$power&quot; != *&quot;running&quot;* &amp;&amp; &quot;$power&quot; != &quot;VM running&quot; ]]; then
+    echo &quot;SKIP $rg/$vm - power state: $power&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+    return 0
+  fi
+
+  if ! az vm run-command invoke \
+      --subscription &quot;$sub&quot; \
+      --resource-group &quot;$rg&quot; \
+      --name &quot;$vm&quot; \
+      --command-id RunPowerShellScript \
+      --scripts &quot;$GUEST_PS&quot; \
+      -o json &gt; &quot;$output_file&quot; 2&gt; &quot;$err_file&quot;; then
+    echo &quot;ERROR $rg/$vm - run-command failed: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$err_file&quot;)&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+    return 0
+  fi
+
+  # Azure returns script stdout in value[].message. Extract the JSON array from that message.
+  local msg
+  msg=$(jq -r &#x27;[.value[]?.message] | join(&quot;\n&quot;)&#x27; &quot;$output_file&quot;)
+  if [[ -z &quot;$msg&quot; || &quot;$msg&quot; == &quot;null&quot; ]]; then
+    echo &quot;WARN $rg/$vm - no software output returned&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+    return 0
+  fi
+
+  # Keep only the JSON array/object portion in case Run Command adds status text.
+  printf &#x27;%s\n&#x27; &quot;$msg&quot; | python3 -c &#x27;
+import sys, json
+s=sys.stdin.read().strip()
+start=s.find(&quot;[&quot;)
+if start &lt; 0: start=s.find(&quot;{&quot;)
+if start &lt; 0:
+    raise SystemExit(&quot;no JSON payload found&quot;)
+payload=s[start:]
+# Trim after matching JSON by trying progressively smaller suffixes if needed.
+for end in range(len(payload), 0, -1):
+    try:
+        obj=json.loads(payload[:end])
+        print(json.dumps(obj, separators=(&quot;,&quot;,&quot;:&quot;)))
+        break
+    except Exception:
+        continue
+else:
+    raise SystemExit(&quot;could not parse JSON payload&quot;)
+&#x27; &gt; &quot;$software_file&quot; 2&gt;&gt; &quot;$err_file&quot; || {
+    echo &quot;ERROR $rg/$vm - could not parse run-command JSON output: $(tr &#x27;\n&#x27; &#x27; &#x27; &lt; &quot;$err_file&quot;)&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+    return 0
+  }
+
+  jq -c --arg sub &quot;$sub&quot; --arg rg &quot;$rg&quot; --arg vm &quot;$vm&quot; --arg loc &quot;$loc&quot; --arg power &quot;$power&quot; --arg size &quot;$size&quot; --arg os &quot;$os&quot; --arg computer &quot;$computer&quot; --arg id &quot;$id&quot; &#x27;
+    (if type==&quot;array&quot; then . else [.] end)[] |
+    {
+      SubscriptionId: $sub,
+      ResourceGroup: $rg,
+      VMName: $vm,
+      AzureComputerName: $computer,
+      GuestComputerName: (.ComputerName // &quot;&quot;),
+      Location: $loc,
+      PowerState: $power,
+      VMSize: $size,
+      OSType: $os,
+      ResourceId: $id,
+      DisplayName: (.DisplayName // &quot;&quot;),
+      DisplayVersion: (.DisplayVersion // &quot;&quot;),
+      Publisher: (.Publisher // &quot;&quot;),
+      InstallDate: (.InstallDate // &quot;&quot;),
+      InstallDateRaw: (.InstallDateRaw // &quot;&quot;),
+      Architecture: (.Architecture // &quot;&quot;),
+      InstallLocation: (.InstallLocation // &quot;&quot;),
+      RegistryKey: (.RegistryKey // &quot;&quot;),
+      RegistryPath: (.RegistryPath // &quot;&quot;),
+      UninstallString: (.UninstallString // &quot;&quot;),
+      QuietUninstallString: (.QuietUninstallString // &quot;&quot;)
+    }&#x27; &quot;$software_file&quot; &gt;&gt; &quot;$SOFTWARE_JSONL&quot;
+
+  echo &quot;OK $rg/$vm&quot;
+}
+export -f collect_vm
+export GUEST_PS TMP_DIR ERROR_LOG SOFTWARE_JSONL
+
+# Run collection with bounded parallelism.
+if command -v xargs &gt;/dev/null 2&gt;&amp;1; then
+  # -d &#x27;\n&#x27; keeps each JSONL object intact; without it, xargs may treat quotes inside JSON specially.
+  xargs -d &#x27;\n&#x27; -P &quot;$PARALLEL&quot; -I {} bash -c &#x27;collect_vm &quot;$@&quot;&#x27; _ {} &lt; &quot;$VM_JSON&quot;
+else
+  while IFS= read -r line; do collect_vm &quot;$line&quot;; done &lt; &quot;$VM_JSON&quot;
+fi
+
+# Build CSV. If no software rows were collected, still write headers.
+if [[ -s &quot;$SOFTWARE_JSONL&quot; ]]; then
+  jq -r &#x27;[&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&quot;,&quot;AzureComputerName&quot;,&quot;GuestComputerName&quot;,&quot;Location&quot;,&quot;PowerState&quot;,&quot;VMSize&quot;,&quot;OSType&quot;,&quot;DisplayName&quot;,&quot;DisplayVersion&quot;,&quot;Publisher&quot;,&quot;InstallDate&quot;,&quot;InstallDateRaw&quot;,&quot;Architecture&quot;,&quot;InstallLocation&quot;,&quot;RegistryKey&quot;,&quot;RegistryPath&quot;,&quot;UninstallString&quot;,&quot;QuietUninstallString&quot;,&quot;ResourceId&quot;],
+    (inputs | [.SubscriptionId,.ResourceGroup,.VMName,.AzureComputerName,.GuestComputerName,.Location,.PowerState,.VMSize,.OSType,.DisplayName,.DisplayVersion,.Publisher,.InstallDate,.InstallDateRaw,.Architecture,.InstallLocation,.RegistryKey,.RegistryPath,.UninstallString,.QuietUninstallString,.ResourceId]) | @csv&#x27; &lt; &quot;$SOFTWARE_JSONL&quot; &gt; &quot;$SOFTWARE_CSV&quot;
+else
+  printf &#x27;%s\n&#x27; &#x27;&quot;SubscriptionId&quot;,&quot;ResourceGroup&quot;,&quot;VMName&quot;,&quot;AzureComputerName&quot;,&quot;GuestComputerName&quot;,&quot;Location&quot;,&quot;PowerState&quot;,&quot;VMSize&quot;,&quot;OSType&quot;,&quot;DisplayName&quot;,&quot;DisplayVersion&quot;,&quot;Publisher&quot;,&quot;InstallDate&quot;,&quot;InstallDateRaw&quot;,&quot;Architecture&quot;,&quot;InstallLocation&quot;,&quot;RegistryKey&quot;,&quot;RegistryPath&quot;,&quot;UninstallString&quot;,&quot;QuietUninstallString&quot;,&quot;ResourceId&quot;&#x27; &gt; &quot;$SOFTWARE_CSV&quot;
+fi
+
+TOTAL_SOFTWARE=$(if [[ -s &quot;$SOFTWARE_JSONL&quot; ]]; then wc -l &lt; &quot;$SOFTWARE_JSONL&quot; | tr -d &#x27; &#x27;; else echo 0; fi)
+ERROR_COUNT=$(if [[ -s &quot;$ERROR_LOG&quot; ]]; then wc -l &lt; &quot;$ERROR_LOG&quot; | tr -d &#x27; &#x27;; else echo 0; fi)
+
+BLOB_DESTINATION=&quot;&quot;
+if [[ -n &quot;$BLOB_ACCOUNT&quot; &amp;&amp; -n &quot;$BLOB_CONTAINER&quot; ]]; then
+  BLOB_DESTINATION=&quot;$BLOB_PREFIX/$TS&quot;
+  echo &quot;&quot;
+  echo &quot;Uploading report folder to Azure Blob Storage...&quot;
+  echo &quot;  Storage account: $BLOB_ACCOUNT&quot;
+  echo &quot;  Container:       $BLOB_CONTAINER&quot;
+  echo &quot;  Blob prefix:     $BLOB_DESTINATION&quot;
+
+  if az storage container create \
+      --account-name &quot;$BLOB_ACCOUNT&quot; \
+      --name &quot;$BLOB_CONTAINER&quot; \
+      --auth-mode login \
+      -o none; then
+    az storage blob upload-batch \
+      --account-name &quot;$BLOB_ACCOUNT&quot; \
+      --auth-mode login \
+      --destination &quot;$BLOB_CONTAINER&quot; \
+      --destination-path &quot;$BLOB_DESTINATION&quot; \
+      --source &quot;$OUT_DIR&quot; \
+      --overwrite true \
+      -o table
+  else
+    echo &quot;WARN: Could not create/verify blob container. Skipping blob upload.&quot; | tee -a &quot;$ERROR_LOG&quot; &gt;&amp;2
+    BLOB_DESTINATION=&quot;&quot;
+  fi
+fi
+
+echo &quot;&quot;
+echo &quot;Inventory complete.&quot;
+echo &quot;Windows VM count: $VM_COUNT&quot;
+echo &quot;Software rows: $TOTAL_SOFTWARE&quot;
+echo &quot;Warnings/errors: $ERROR_COUNT&quot;
+echo &quot;Files:&quot;
+echo &quot;  VM inventory CSV:       $VM_CSV&quot;
+echo &quot;  Software inventory CSV: $SOFTWARE_CSV&quot;
+echo &quot;  Software JSONL:         $SOFTWARE_JSONL&quot;
+echo &quot;  Error log:              $ERROR_LOG&quot;
+if [[ -n &quot;$BLOB_DESTINATION&quot; ]]; then
+  echo &quot;  Blob upload path:       https://$BLOB_ACCOUNT.blob.core.windows.net/$BLOB_CONTAINER/$BLOB_DESTINATION/&quot;
+fi
+echo &quot;&quot;
+echo &quot;Next safe phase after validating this report: update availability only (no downloads/installs).&quot;
+</code></pre>
+    </section>
+  </main>
+  <script>
+    document.querySelectorAll('pre').forEach((pre) => {
+      const btn = pre.querySelector('.copy');
+      const code = pre.querySelector('code');
+      if (!btn || !code) return;
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(code.innerText);
+          const old = btn.textContent;
+          btn.textContent = 'Copied';
+          setTimeout(() => btn.textContent = old, 1200);
+        } catch (e) {
+          btn.textContent = 'Select + copy';
+        }
+      });
+    });
+  </script>
+</body>
+</html>
