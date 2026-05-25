@@ -182,27 +182,41 @@ Google Compute Engine                       -> Google Cloud
 
 Azure and on-prem Hyper-V can look similar from inside the guest. If you want exact Azure confirmation later, combine this AD report with the Azure VM report by computer name/DNS name.
 
-## If many computers show as unreachable
+## If many computers show as unreachable or remote query failed
 
-Check these items:
+If the first 20-30 machines all fail, stop and test one known-online computer before waiting through the whole list. The script now stops live probing after 25 consecutive remote failures and zero successes, while still saving the AD-only asset list.
 
-1. Are the machines online?
-2. Can you resolve their DNS names?
-3. Is WinRM enabled?
-4. Does Windows Firewall allow PowerShell Remoting?
-5. Does your account have local admin rights?
-6. Are laptops off-network or disconnected from VPN/Twingate?
-
-Basic WinRM test for one machine:
+Pick one computer that you know is online and run:
 
 ```powershell
 Test-WSMan SERVER01
 ```
 
-Basic remote command test:
+Then test a tiny remote command:
 
 ```powershell
-Invoke-Command -ComputerName SERVER01 -ScriptBlock { hostname }
+Invoke-Command -ComputerName SERVER01 -ScriptBlock { hostname; whoami }
+```
+
+If either command fails, the issue is not the inventory script. It is usually one of these:
+
+1. WinRM/PowerShell Remoting is not enabled on target machines.
+2. Windows Firewall blocks WinRM, usually TCP 5985 for HTTP or 5986 for HTTPS.
+3. DNS cannot resolve the AD computer names from your admin workstation.
+4. Your account is not local admin/equivalent on the target machines.
+5. Laptops/desktops are offline or not connected to VPN/Twingate.
+6. A server/client GPO blocks remote management.
+
+To force the script to keep trying every computer anyway:
+
+```powershell
+.\ad-windows-asset-inventory.ps1 -ContinueAfterMassRemoteFailure
+```
+
+To change the early-stop threshold:
+
+```powershell
+.\ad-windows-asset-inventory.ps1 -StopAfterConsecutiveRemoteFailures 50
 ```
 
 If WinRM is not enabled, a domain GPO can enable it for domain machines. Do that carefully and only for trusted admin networks.
