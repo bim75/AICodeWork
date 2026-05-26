@@ -128,6 +128,64 @@ PY
   fi
 }
 
+generate_local_html_report() {
+  local run_dir="$1"
+  local run_utc="$2"
+  local days_old="$3"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "WARN: python3 not found; writing basic index.html instead of rich local report" >&2
+    return 1
+  fi
+  python3 - "$run_dir" "$run_utc" "$days_old" <<'PY'
+import collections, html, json, os, sys
+run_dir, run_utc, days_old = sys.argv[1:4]
+def load(name, default):
+    try:
+        with open(os.path.join(run_dir, name), encoding='utf-8') as f: return json.load(f)
+    except FileNotFoundError: return default
+def esc(v):
+    if v is None: return ''
+    if isinstance(v, (dict, list)): v = json.dumps(v, ensure_ascii=False, sort_keys=True)
+    return html.escape(str(v))
+def raw(v): return html.escape(json.dumps(v, ensure_ascii=False, indent=2, sort_keys=True))
+def counts(items, key): return collections.Counter(str(x.get(key) or '(blank)') for x in items if isinstance(x, dict)).most_common()
+def make_table(items, cols, tid):
+    if not items: return '<p class="muted">No rows.</p>'
+    head=''.join(f'<th>{esc(label)}</th>' for label,_ in cols)
+    rows=[]
+    for item in items:
+        rows.append('<tr>'+''.join(f'<td>{esc(item.get(key, "") if isinstance(item, dict) else "")}</td>' for _,key in cols)+'</tr>')
+    return f'<div class="table-wrap"><table id="{esc(tid)}"><thead><tr>{head}</tr></thead><tbody>'+'\n'.join(rows)+'</tbody></table></div>'
+resources=load('resources.json',[]); candidates=load('cleanup-candidates.json',[]); advisor=load('advisor-cost-recommendations.json',[])
+subs=load('subscriptions.selected.json',[]); all_subs=load('subscriptions.all.json',[])
+high=[x for x in candidates if str(x.get('severity','')).lower()=='high']; med=[x for x in candidates if str(x.get('severity','')).lower()=='medium']; low=[x for x in candidates if str(x.get('severity','')).lower()=='low']
+reasons=counts(candidates,'reason'); severities=counts(candidates,'severity'); cand_types=counts(candidates,'type'); res_types=counts(resources,'type'); rgs=counts(resources,'resourceGroup')
+summary=['Azure abandoned resource inventory summary',f'Run UTC: {run_utc}',f'Subscriptions reviewed: {len(subs)}',f'Resources inventoried: {len(resources)}',f'Cleanup candidate rows: {len(candidates)}',f'High severity candidates: {len(high)}',f'Medium severity candidates: {len(med)}',f'Low severity candidates: {len(low)}',f'Advisor cost recommendations: {len(advisor)}','','Top candidate reasons:']
+summary += [f'- {c}: {r}' for r,c in reasons[:20]]
+summary_text='\n'.join(summary)
+cand_cols=[('Severity','severity'),('Reason','reason'),('Suggested Action','suggestedAction'),('Subscription','subscriptionId'),('Resource Group','resourceGroup'),('Type','type'),('Name','name'),('Location','location'),('Evidence','evidence'),('ID','id')]
+res_cols=[('Subscription','subscriptionId'),('Resource Group','resourceGroup'),('Type','type'),('Name','name'),('Location','location'),('Kind','kind'),('SKU Name','skuName'),('SKU Tier','skuTier'),('Owner Tag','tag_owner'),('Environment Tag','tag_env'),('Provisioning State','provisioningState'),('Managed By','managedBy'),('Tags','tags'),('ID','id')]
+adv_cols=[('Subscription','subscriptionId'),('Category','category'),('Impact','impact'),('Impacted Field','impactedField'),('Impacted Value','impactedValue'),('Recommendation','shortDescription'),('Details','extendedProperties'),('ID','id')]
+sub_list=''.join(f'<li>{esc(s.get("name",""))} — <code>{esc(s.get("id",""))}</code></li>' for s in subs if isinstance(s,dict))
+breakdowns=''
+for title, rows in [('Candidate severity',severities),('Candidate reasons',reasons),('Candidate resource types',cand_types),('Top resource types',res_types[:30]),('Top resource groups',rgs[:30])]:
+    breakdowns += f'<h3>{esc(title)}</h3><table class="compact"><thead><tr><th>Count</th><th>Value</th></tr></thead><tbody>'
+    breakdowns += ''.join(f'<tr><td>{c}</td><td>{esc(v)}</td></tr>' for v,c in rows) + '</tbody></table>'
+html_doc=f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Azure Abandoned Resource Inventory - Local Report</title><style>
+:root {{ --bg:#0f172a; --panel:#111827; --panel2:#1f2937; --text:#e5e7eb; --muted:#9ca3af; --line:#374151; --accent:#60a5fa; --med:#fbbf24; }} *{{box-sizing:border-box}} body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.45}} header{{padding:24px;background:linear-gradient(135deg,#111827,#172554);border-bottom:1px solid var(--line)}} main{{padding:20px}} h1{{margin:0 0 8px;font-size:28px}} a{{color:var(--accent)}} .card{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0 0 16px}} .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}} .metric{{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}} .num{{font-size:26px;font-weight:750}} .label,.muted{{color:var(--muted)}} .controls{{margin:10px 0 14px}} input,button{{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px}} .table-wrap{{overflow:auto;max-height:620px;border:1px solid var(--line);border-radius:10px}} table{{border-collapse:collapse;width:100%;font-size:13px}} th,td{{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}} th{{position:sticky;top:0;background:#0b1220;z-index:1}} tr:nth-child(even) td{{background:rgba(255,255,255,.025)}} .compact{{width:auto;min-width:360px}} pre,textarea{{width:100%;background:#020617;color:#d1d5db;border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto}} textarea{{min-height:320px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}} .warning{{border-left:4px solid var(--med);padding-left:12px}} nav{{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}} nav a{{color:var(--text);text-decoration:none;background:#0b1220;border:1px solid var(--line);border-radius:999px;padding:7px 11px}}
+</style></head><body><header><h1>Azure Abandoned Resource Inventory</h1><div class="muted">Self-contained local HTML report generated {esc(run_utc)} UTC. Open this file locally after downloading the ZIP.</div><nav><a href="#summary">Summary</a><a href="#candidates">Cleanup Candidates</a><a href="#inventory">Full Inventory</a><a href="#advisor">Advisor</a><a href="#raw">Raw JSON</a></nav></header><main>
+<section id="summary" class="card"><h2>Summary</h2><div class="grid"><div class="metric"><div class="num">{len(subs)}</div><div class="label">Subscriptions reviewed</div></div><div class="metric"><div class="num">{len(resources)}</div><div class="label">Resources inventoried</div></div><div class="metric"><div class="num">{len(candidates)}</div><div class="label">Cleanup candidate rows</div></div><div class="metric"><div class="num">{len(high)}</div><div class="label">High severity</div></div><div class="metric"><div class="num">{len(med)}</div><div class="label">Medium severity</div></div><div class="metric"><div class="num">{len(low)}</div><div class="label">Low severity</div></div><div class="metric"><div class="num">{len(advisor)}</div><div class="label">Advisor cost recommendations</div></div></div><p class="warning">This is a review report only. Do not delete resources until the owner/application impact is confirmed.</p><h3>Selected subscriptions</h3><ul>{sub_list}</ul><h3>Copy/paste summary</h3><button onclick="copyText('summaryText')">Copy summary</button><pre id="summaryText">{esc(summary_text)}</pre>{breakdowns}</section>
+<section id="candidates" class="card"><h2>Cleanup candidates</h2><p class="muted">Same rows as cleanup-candidates.json/csv. Use the table search box.</p><div class="controls"><input data-filter="candidateTable" placeholder="Search cleanup candidates..." oninput="filterTable(this)"></div>{make_table(candidates,cand_cols,'candidateTable')}</section>
+<section id="inventory" class="card"><h2>Full Azure inventory</h2><p class="muted">Same resource rows as resources.json / azure-inventory.csv, with tags and IDs included.</p><div class="controls"><input data-filter="resourceTable" placeholder="Search full inventory..." oninput="filterTable(this)"></div>{make_table(resources,res_cols,'resourceTable')}</section>
+<section id="advisor" class="card"><h2>Azure Advisor cost recommendations</h2><p class="muted">Same rows as advisor-cost-recommendations.json/jsonl where available.</p><div class="controls"><input data-filter="advisorTable" placeholder="Search advisor recommendations..." oninput="filterTable(this)"></div>{make_table(advisor,adv_cols,'advisorTable')}</section>
+<section id="raw" class="card"><h2>Raw embedded JSON</h2><p class="muted">These sections preserve the source JSON data inside this local HTML file for copy/paste or audit.</p><details><summary>cleanup-candidates.json</summary><textarea readonly>{raw(candidates)}</textarea></details><details><summary>resources.json</summary><textarea readonly>{raw(resources)}</textarea></details><details><summary>advisor-cost-recommendations.json</summary><textarea readonly>{raw(advisor)}</textarea></details><details><summary>subscriptions.selected.json</summary><textarea readonly>{raw(subs)}</textarea></details><details><summary>subscriptions.all.json</summary><textarea readonly>{raw(all_subs)}</textarea></details></section>
+</main><script>function filterTable(input){{const table=document.getElementById(input.dataset.filter);const q=input.value.toLowerCase();if(!table)return;for(const row of table.tBodies[0].rows){{row.style.display=row.innerText.toLowerCase().includes(q)?'':'none';}}}} function copyText(id){{const text=document.getElementById(id).innerText;navigator.clipboard.writeText(text).then(()=>alert('Copied summary to clipboard'));}}</script></body></html>"""
+with open(os.path.join(run_dir,'index.html'),'w',encoding='utf-8') as f: f.write(html_doc)
+print(os.path.join(run_dir,'index.html'))
+PY
+}
+
+
 need az
 need jq
 
@@ -376,7 +434,9 @@ KQL
     find "$run_dir" -maxdepth 1 -type f | sort
   } > "$run_dir/summary.txt"
 
-  cat > "$run_dir/index.html" <<HTML
+  run_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ! generate_local_html_report "$run_dir" "$run_utc" "$DAYS_OLD"; then
+    cat > "$run_dir/index.html" <<HTML
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Azure Abandoned Resource Inventory</title>
@@ -384,7 +444,7 @@ KQL
 </head>
 <body>
 <h1>Azure Abandoned Resource Inventory</h1>
-<p>Run UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)</p>
+<p>Run UTC: $run_utc</p>
 <ul>
 <li>Subscriptions: $sub_count</li>
 <li>Resources inventoried: $resource_count</li>
@@ -396,6 +456,7 @@ KQL
 <pre>$(jq -r 'sort_by(.reason) | group_by(.reason)[] | [length, .[0].reason] | @tsv' "$run_dir/cleanup-candidates.json" | sort -rn | head -20)</pre>
 </body></html>
 HTML
+  fi
 
   echo "$run_dir/index.html" >> "$run_dir/summary.txt"
   echo "ZIP archive: $zip_path" >> "$run_dir/summary.txt"
@@ -404,9 +465,11 @@ HTML
   create_zip_archive "$run_dir" "$zip_path"
 
   log "Done. Output directory: $run_dir"
+  log "Local HTML report: $run_dir/index.html"
   log "ZIP archive: $zip_path"
   cat "$run_dir/summary.txt"
   echo
+  echo "Open local HTML report: $run_dir/index.html"
   echo "Download ZIP archive: $zip_path"
   echo >&2
   echo "Returning to subscription menu. You can run another subscription, all subscriptions, refresh, or quit." >&2
