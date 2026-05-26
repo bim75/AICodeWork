@@ -26,6 +26,71 @@ need() {
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 
+
+run_with_spinner() {
+  local label="$1"
+  local stdout_file="$2"
+  local stderr_file="$3"
+  shift 3
+  local start pid rc elapsed spin i
+  spin='|/-\\'
+  i=0
+  start=$(date +%s)
+  printf '[%s] START %s\n' "$(date -u +%H:%M:%S)" "$label" >&2
+  if [[ "${VERBOSE_COMMANDS:-0}" == "1" ]]; then
+    printf '[%s] Command:' "$(date -u +%H:%M:%S)" >&2
+    local arg
+    for arg in "$@"; do printf ' %q' "$arg" >&2; done
+    printf '\n' >&2
+  fi
+  ( "$@" >"$stdout_file" 2>"$stderr_file" ) &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    elapsed=$(( $(date +%s) - start ))
+    printf '\r[%s] WORKING %s elapsed=%ss %s' "$(date -u +%H:%M:%S)" "$label" "$elapsed" "${spin:i++%4:1}" >&2
+    sleep 2
+  done
+  if wait "$pid"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  elapsed=$(( $(date +%s) - start ))
+  printf '\r%*s\r' 100 '' >&2
+  if [[ "$rc" -eq 0 ]]; then
+    printf '[%s] OK %s elapsed=%ss\n' "$(date -u +%H:%M:%S)" "$label" "$elapsed" >&2
+  else
+    printf '[%s] ERROR %s elapsed=%ss rc=%s\n' "$(date -u +%H:%M:%S)" "$label" "$elapsed" "$rc" >&2
+    if [[ -s "$stderr_file" ]]; then
+      echo "---- last stderr lines for: $label ----" >&2
+      tail -40 "$stderr_file" >&2 || true
+      echo "---------------------------------------" >&2
+    fi
+    return "$rc"
+  fi
+}
+
+az_json_with_spinner() {
+  local label="$1"
+  local outfile="$2"
+  shift 2
+  run_with_spinner "$label" "$outfile" "$outfile.err" "$@"
+}
+
+ensure_azure_cli_ready() {
+  local tmp
+  tmp="$SESSION_DIR/az-extension-preflight.json"
+  log "Preparing Azure CLI non-interactive extension behavior..."
+  az config set extension.use_dynamic_install=yes_without_prompt >/dev/null 2>"$SESSION_DIR/az-config-dynamic-install.err" || true
+  az config set extension.dynamic_install_allow_preview=true >/dev/null 2>"$SESSION_DIR/az-config-preview.err" || true
+
+  if ! az extension show --name resource-graph >/dev/null 2>&1; then
+    run_with_spinner "Installing Azure CLI resource-graph extension" "$tmp" "$tmp.err" az extension add --name resource-graph --yes
+  else
+    log "Azure CLI resource-graph extension already installed."
+  fi
+}
+
 safe_name() {
   tr -cs 'A-Za-z0-9._-' '-' <<<"$1" | sed 's/^-//; s/-$//; s/--*/-/g'
 }
@@ -38,9 +103,10 @@ if ! az account show >/dev/null 2>&1; then
   exit 1
 fi
 
+ensure_azure_cli_ready
+
 fetch_subscriptions() {
-  log "Polling Azure for subscriptions..."
-  az account list --all -o json > "$SUBSCRIPTIONS_FILE"
+  az_json_with_spinner "Polling Azure for subscriptions" "$SUBSCRIPTIONS_FILE" az account list --all -o json
   local total enabled
   total=$(jq length "$SUBSCRIPTIONS_FILE")
   enabled=$(jq '[.[] | select(.state == "Enabled")] | length' "$SUBSCRIPTIONS_FILE")
@@ -142,14 +208,12 @@ graph_query_paginated() {
   next_file="$outfile.next.json"
   tmp_file="$outfile.tmp.json"
 
-  log "$label"
-  az graph query --first 1000 --subscriptions "${sub_ids[@]}" -q "$query" -o json > "$page_file"
+  az_json_with_spinner "$label" "$page_file" az graph query --first 1000 --subscriptions "${sub_ids[@]}" -q "$query" -o json
   jq '.data' "$page_file" > "$outfile"
 
   skip=$(jq -r '.skipToken // empty' "$page_file")
   while [[ -n "$skip" ]]; do
-    log "Fetching next page for: $label"
-    az graph query --first 1000 --skip-token "$skip" --subscriptions "${sub_ids[@]}" -q "$query" -o json > "$next_file"
+    az_json_with_spinner "Fetching next page for: $label" "$next_file" az graph query --first 1000 --skip-token "$skip" --subscriptions "${sub_ids[@]}" -q "$query" -o json
     jq -s '.[0] + .[1].data' "$outfile" "$next_file" > "$tmp_file"
     mv "$tmp_file" "$outfile"
     skip=$(jq -r '.skipToken // empty' "$next_file")
@@ -233,8 +297,8 @@ KQL
   log "Pulling Azure Advisor cost recommendations where available..."
   : > "$run_dir/advisor-cost-recommendations.jsonl"
   while read -r sub; do
-    az account set --subscription "$sub" >/dev/null
-    if az advisor recommendation list --category Cost -o json > "$run_dir/advisor-$sub.json" 2>"$run_dir/advisor-$sub.err"; then
+    run_with_spinner "Setting Azure subscription $sub" "$run_dir/account-set-$sub.out" "$run_dir/account-set-$sub.err" az account set --subscription "$sub"
+    if az_json_with_spinner "Advisor cost recommendations for $sub" "$run_dir/advisor-$sub.json" az advisor recommendation list --category Cost -o json; then
       jq -c --arg subscriptionId "$sub" '.[] | . + {subscriptionId:$subscriptionId}' "$run_dir/advisor-$sub.json" >> "$run_dir/advisor-cost-recommendations.jsonl"
     else
       log "WARN: Advisor query failed for subscription $sub; see $run_dir/advisor-$sub.err"

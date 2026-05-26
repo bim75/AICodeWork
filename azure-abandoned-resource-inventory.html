@@ -80,6 +80,19 @@ chmod +x azure-abandoned-inventory.sh
       </div>
     </section>
 
+
+
+    <section class="card">
+      <h2 style="margin-top:0;border-top:0;padding-top:0">Progress and extension handling</h2>
+      <p>The script prints <code>START</code>, <code>WORKING</code>, <code>OK</code>, and <code>ERROR</code> lines with elapsed seconds around slow Azure calls, including subscription polling, Resource Graph queries, and Advisor lookups.</p>
+      <p>It also configures Azure CLI extension installation to be non-interactive and pre-installs the <code>resource-graph</code> extension if needed. This avoids the Azure CLI preview-extension warning sitting at a hidden prompt.</p>
+      <p class="note warn"><strong>If an older copy is stuck</strong> after the preview-extension warning, press <code>Ctrl-C</code>, download the latest script again, and rerun it.</p>
+      <pre><button class="copy">Copy</button><code>curl -L -o azure-abandoned-inventory.sh https://raw.githubusercontent.com/bim75/AICodeWork/main/azure-abandoned-inventory.sh
+chmod +x azure-abandoned-inventory.sh
+./azure-abandoned-inventory.sh</code></pre>
+      <p>Optional: set <code>VERBOSE_COMMANDS=1</code> if you want to see the full Azure CLI commands printed during each progress spinner.</p>
+    </section>
+
     <section class="card">
       <h2 style="margin-top:0;border-top:0;padding-top:0">Output files</h2>
       <p>Each script session creates a timestamped directory under <code>azure-abandoned-inventory-output/</code>. Each selection gets its own run folder.</p>
