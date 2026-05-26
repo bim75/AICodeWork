@@ -73,6 +73,29 @@ DAYS_OLD=180 ./azure-abandoned-inventory.sh
 
 # Change output directory
 OUT_DIR=./my-azure-report ./azure-abandoned-inventory.sh
+
+# Show full az commands while progress spinners run
+VERBOSE_COMMANDS=1 ./azure-abandoned-inventory.sh
+```
+
+## Progress and Azure CLI extension handling
+
+The script now prints `START`, `WORKING`, `OK`, and `ERROR` lines with elapsed seconds around slow Azure calls, including subscription polling, Resource Graph queries, and Advisor lookups.
+
+It also configures Azure CLI extension installation to be non-interactive and pre-installs the `resource-graph` extension if needed. This prevents the Azure CLI preview-extension warning from sitting at a hidden prompt.
+
+If you already started an older copy and it appears stuck after this warning:
+
+```text
+WARNING: Preview version of extension is disabled by default...
+```
+
+Press `Ctrl-C`, download the latest script again, and rerun it:
+
+```bash
+curl -L -o azure-abandoned-inventory.sh https://raw.githubusercontent.com/bim75/AICodeWork/main/azure-abandoned-inventory.sh
+chmod +x azure-abandoned-inventory.sh
+./azure-abandoned-inventory.sh
 ```
 
 ## Recommended review process
