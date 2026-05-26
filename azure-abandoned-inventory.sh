@@ -254,37 +254,49 @@ KQL
     "$run_dir/resources.json" > "$run_dir/azure-inventory.csv"
 
   read -r -d '' CANDIDATE_QUERY <<KQL || true
-let cutoff = ago(${DAYS_OLD}d);
-let allResources = Resources | project id, name, type, resourceGroup, subscriptionId, location, tags, properties, managedBy;
-let unattachedDisks = allResources
-  | where type =~ 'microsoft.compute/disks'
-  | where isempty(tostring(managedBy))
-  | extend reason='Unattached managed disk', severity='High', suggestedAction='Review, snapshot if needed, then delete', evidence=strcat('diskState=', tostring(properties.diskState));
-let unattachedNics = allResources
+Resources
+| where type =~ 'microsoft.compute/disks'
+| where isempty(tostring(managedBy))
+| extend reason='Unattached managed disk', severity='High', suggestedAction='Review, snapshot if needed, then delete', evidence=strcat('diskState=', tostring(properties.diskState))
+| project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+| union (
+  Resources
   | where type =~ 'microsoft.network/networkinterfaces'
   | where isempty(tostring(properties.virtualMachine.id)) and isempty(tostring(properties.privateEndpoint.id))
-  | extend reason='Unattached network interface', severity='High', suggestedAction='Delete if no planned reuse', evidence='No VM/private endpoint association';
-let unassociatedPips = allResources
+  | extend reason='Unattached network interface', severity='High', suggestedAction='Delete if no planned reuse', evidence='No VM/private endpoint association'
+  | project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+)
+| union (
+  Resources
   | where type =~ 'microsoft.network/publicipaddresses'
   | where isempty(tostring(properties.ipConfiguration.id)) and isempty(tostring(properties.natGateway.id))
-  | extend reason='Unassociated public IP', severity='High', suggestedAction='Delete if no planned reuse', evidence=strcat('ipAddress=', tostring(properties.ipAddress));
-let oldSnapshots = allResources
+  | extend reason='Unassociated public IP', severity='High', suggestedAction='Delete if no planned reuse', evidence=strcat('ipAddress=', tostring(properties.ipAddress))
+  | project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+)
+| union (
+  Resources
   | where type =~ 'microsoft.compute/snapshots'
   | extend created=todatetime(properties.timeCreated)
-  | where isnotempty(created) and created < cutoff
-  | extend reason=strcat('Snapshot older than ', '${DAYS_OLD}', ' days'), severity='Medium', suggestedAction='Confirm retention need, then delete', evidence=strcat('created=', tostring(created));
-let deallocatedVms = allResources
+  | where isnotempty(created) and created < ago(${DAYS_OLD}d)
+  | extend reason=strcat('Snapshot older than ', '${DAYS_OLD}', ' days'), severity='Medium', suggestedAction='Confirm retention need, then delete', evidence=strcat('created=', tostring(created))
+  | project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+)
+| union (
+  Resources
   | where type =~ 'microsoft.compute/virtualmachines'
   | extend powerState=tostring(properties.extended.instanceView.powerState.displayStatus)
   | where powerState has 'deallocated' or powerState has 'stopped'
-  | extend reason='Stopped/deallocated VM', severity='Medium', suggestedAction='Confirm owner; delete or keep stopped intentionally', evidence=strcat('powerState=', powerState);
-let untagged = allResources
+  | extend reason='Stopped/deallocated VM', severity='Medium', suggestedAction='Confirm owner; delete or keep stopped intentionally', evidence=strcat('powerState=', powerState)
+  | project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+)
+| union (
+  Resources
   | extend owner=coalesce(tostring(tags.owner), tostring(tags.Owner), tostring(tags['cost-owner']), tostring(tags['CostOwner']))
   | extend env=coalesce(tostring(tags.environment), tostring(tags.Environment), tostring(tags.env), tostring(tags.Env))
   | where isempty(owner) or isempty(env)
-  | extend reason='Missing owner/environment tag', severity='Low', suggestedAction='Tag owner/env or review for cleanup', evidence=strcat('owner=', owner, '; env=', env);
-union unattachedDisks, unattachedNics, unassociatedPips, oldSnapshots, deallocatedVms, untagged
-| project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+  | extend reason='Missing owner/environment tag', severity='Low', suggestedAction='Tag owner/env or review for cleanup', evidence=strcat('owner=', owner, '; env=', env)
+  | project subscriptionId, resourceGroup, type, name, location, severity, reason, suggestedAction, evidence, id
+)
 | order by severity asc, subscriptionId asc, resourceGroup asc, type asc, name asc
 KQL
 
