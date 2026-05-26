@@ -95,6 +95,39 @@ safe_name() {
   tr -cs 'A-Za-z0-9._-' '-' <<<"$1" | sed 's/^-//; s/-$//; s/--*/-/g'
 }
 
+create_zip_archive() {
+  local source_dir="$1"
+  local zip_path="$2"
+  local abs_zip_path
+  abs_zip_path="$(cd "$(dirname "$zip_path")" && pwd)/$(basename "$zip_path")"
+  rm -f "$abs_zip_path"
+
+  if command -v zip >/dev/null 2>&1; then
+    (cd "$source_dir" && zip -qr "$abs_zip_path" .)
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$source_dir" "$abs_zip_path" <<'PY'
+import os
+import sys
+import zipfile
+
+source_dir = os.path.abspath(sys.argv[1])
+zip_path = os.path.abspath(sys.argv[2])
+
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    for root, _, files in os.walk(source_dir):
+        for name in files:
+            full_path = os.path.join(root, name)
+            if os.path.abspath(full_path) == zip_path:
+                continue
+            arcname = os.path.relpath(full_path, source_dir)
+            zf.write(full_path, arcname)
+PY
+  else
+    echo "ERROR: cannot create zip archive; missing both zip and python3" >&2
+    return 1
+  fi
+}
+
 need az
 need jq
 
@@ -222,9 +255,10 @@ graph_query_paginated() {
 
 run_inventory() {
   local selected_file="$1"
-  local label run_dir sub_count resource_count candidate_count advisor_count
+  local label run_dir zip_path sub_count resource_count candidate_count advisor_count
   label=$(make_run_label "$selected_file")
   run_dir="$SESSION_DIR/$label"
+  zip_path="$SESSION_DIR/${label}.zip"
   mkdir -p "$run_dir"
   cp "$selected_file" "$run_dir/subscriptions.selected.json"
   cp "$SUBSCRIPTIONS_FILE" "$run_dir/subscriptions.all.json"
@@ -363,8 +397,17 @@ KQL
 </body></html>
 HTML
 
+  echo "$run_dir/index.html" >> "$run_dir/summary.txt"
+  echo "ZIP archive: $zip_path" >> "$run_dir/summary.txt"
+
+  log "Creating zip archive for easy download..."
+  create_zip_archive "$run_dir" "$zip_path"
+
   log "Done. Output directory: $run_dir"
+  log "ZIP archive: $zip_path"
   cat "$run_dir/summary.txt"
+  echo
+  echo "Download ZIP archive: $zip_path"
   echo >&2
   echo "Returning to subscription menu. You can run another subscription, all subscriptions, refresh, or quit." >&2
 }
