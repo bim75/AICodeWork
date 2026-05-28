@@ -115,11 +115,15 @@ collect_subscription() {
   say "Collecting subscription: $sub_name [$sub_id]"
   az account set --subscription "$sub_id" >/dev/null
 
-  run_json "Resource inventory for $sub_name" "$dir/resources.json" "$dir/resources.err" az resource list --subscription "$sub_id" --include-response-body false -o json || echo '[]' > "$dir/resources.json"
+  # Keep this compatible with Azure Cloud Shell's installed az version. Some
+  # versions do not support --include-response-body on az resource list.
+  run_json "Resource inventory for $sub_name" "$dir/resources.json" "$dir/resources.err" az resource list --subscription "$sub_id" -o json || echo '[]' > "$dir/resources.json"
 
-  # Resource Graph adds richer fields and relationships when available.
+  # Resource Graph adds richer fields and relationships when available. Azure
+  # Resource Graph caps --first at 1000; the main inventory above still captures
+  # all resources for this report, so this is supplemental.
   local kql="Resources | where subscriptionId == '$sub_id' | project id, name, type, resourceGroup, location, subscriptionId, sku, kind, properties, tags"
-  run_json "Resource Graph inventory for $sub_name" "$dir/resource-graph.json" "$dir/resource-graph.err" az graph query -q "$kql" --subscriptions "$sub_id" --first 5000 -o json || echo '{"data":[]}' > "$dir/resource-graph.json"
+  run_json "Resource Graph inventory for $sub_name" "$dir/resource-graph.json" "$dir/resource-graph.err" az graph query -q "$kql" --subscriptions "$sub_id" --first 1000 -o json || echo '{"data":[]}' > "$dir/resource-graph.json"
 
   run_json "Advisor cost recommendations for $sub_name" "$dir/advisor-cost.json" "$dir/advisor-cost.err" az advisor recommendation list --subscription "$sub_id" --category Cost -o json || echo '[]' > "$dir/advisor-cost.json"
 
