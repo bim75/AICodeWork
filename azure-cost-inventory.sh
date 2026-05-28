@@ -327,7 +327,10 @@ select_subs
 jq -c '.[]' "$SESSION_DIR/selected-subscriptions.json" | while IFS= read -r sub; do
   sub_id="$(jq -r '.id' <<<"$sub")"
   sub_name="$(jq -r '.name' <<<"$sub")"
-  safe_name="sub-$(echo "$sub_id" | tr -c 'A-Za-z0-9' '-')"
+  # Use printf, not echo: echo adds a newline, and tr would turn that newline into
+  # a trailing '-' directory name. The report builder expects the exact same safe
+  # directory format, so a trailing '-' makes index.html show zero data.
+  safe_name="sub-$(printf '%s' "$sub_id" | tr -c 'A-Za-z0-9' '-')"
   collect_subscription "$sub_id" "$sub_name" "$safe_name"
 done
 
