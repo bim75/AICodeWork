@@ -44,6 +44,29 @@ run_json() {
   fi
 }
 
+run_json_retry() {
+  local label="$1" out="$2" err="$3"; shift 3
+  local attempts="${AZ_RETRY_ATTEMPTS:-5}"
+  local delay="${AZ_RETRY_DELAY:-15}"
+  local attempt=1
+  while true; do
+    if run_json "$label attempt $attempt/$attempts" "$out" "$err" "$@"; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$attempts" ]; then
+      return 1
+    fi
+    if grep -qiE 'Too Many Requests|429|throttl|rate.?limit' "$err" 2>/dev/null; then
+      echo "WARN $label was throttled by Azure. Waiting ${delay}s before retry $((attempt+1))/$attempts."
+      sleep "$delay"
+      delay=$((delay * 2))
+      attempt=$((attempt + 1))
+      continue
+    fi
+    return 1
+  done
+}
+
 az config set extension.use_dynamic_install=yes_without_prompt >/dev/null 2>&1 || true
 az config set extension.dynamic_install_allow_preview=true >/dev/null 2>&1 || true
 
@@ -147,7 +170,7 @@ collect_subscription() {
   }
 }
 EOF
-  run_json "Cost by resource for $sub_name ($DAYS days)" "$dir/cost-by-resource.raw.json" "$dir/cost-by-resource.err" \
+  run_json_retry "Cost by resource for $sub_name ($DAYS days)" "$dir/cost-by-resource.raw.json" "$dir/cost-by-resource.err" \
     az rest --method post --url "https://management.azure.com/subscriptions/$sub_id/providers/Microsoft.CostManagement/query?api-version=2023-03-01" --body "@$dir/cost-query-body.json" -o json || echo '{}' > "$dir/cost-by-resource.raw.json"
 
   cat > "$dir/service-cost-query-body.json" <<EOF
@@ -162,7 +185,7 @@ EOF
   }
 }
 EOF
-  run_json "Cost by service for $sub_name ($DAYS days)" "$dir/cost-by-service.raw.json" "$dir/cost-by-service.err" \
+  run_json_retry "Cost by service for $sub_name ($DAYS days)" "$dir/cost-by-service.raw.json" "$dir/cost-by-service.err" \
     az rest --method post --url "https://management.azure.com/subscriptions/$sub_id/providers/Microsoft.CostManagement/query?api-version=2023-03-01" --body "@$dir/service-cost-query-body.json" -o json || echo '{}' > "$dir/cost-by-service.raw.json"
 
   jq -r '
