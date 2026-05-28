@@ -258,11 +258,11 @@ for s in subs:
     for a in advisor:
         ext=a.get('extendedProperties') or {}
         amt=ext.get('annualSavingsAmount') or ext.get('savingsAmount') or ext.get('monthlySavingsAmount')
-        all_advisor.append({'subscription':s['name'],'category':a.get('category'),'impact':a.get('impact'),'shortDescription':(a.get('shortDescription') or {}).get('problem') or a.get('recommendationTypeId'), 'resourceId':a.get('resourceMetadata',{}).get('resourceId'), 'savings':amt, 'currency':ext.get('savingsCurrency')})
+        all_advisor.append({'subscription':s['name'],'subscriptionId':s['id'],'category':a.get('category'),'impact':a.get('impact'),'shortDescription':(a.get('shortDescription') or {}).get('problem') or a.get('recommendationTypeId'), 'resourceId':a.get('resourceMetadata',{}).get('resourceId'), 'savings':amt, 'currency':ext.get('savingsCurrency')})
     # Candidate findings
     for r in resources:
         t=(r.get('type') or '').lower(); p=r.get('properties') or {}; rid=r.get('id',''); cost=c_by_id.get(rid.lower(),{}).get('Cost',0)
-        base={'subscription':s['name'],'resource':r.get('name'),'type':r.get('type'),'resourceGroup':r.get('resourceGroup'),'location':r.get('location'),'lastDaysCost':cost,'resourceId':rid}
+        base={'subscription':s['name'],'subscriptionId':s['id'],'resource':r.get('name'),'type':r.get('type'),'resourceGroup':r.get('resourceGroup'),'location':r.get('location'),'lastDaysCost':cost,'resourceId':rid}
         if t=='microsoft.compute/disks' and not p.get('managedBy'):
             f=base.copy(); f.update({'severity':'High','finding':'Unattached managed disk','recommendation':'Delete if no longer needed, or snapshot/archive then delete. Verify with owner first.'}); findings.append(f)
         if t=='microsoft.network/publicipaddresses' and not ((p.get('ipConfiguration') or {}).get('id')):
@@ -306,18 +306,37 @@ with open(os.path.join(root,'findings.json'),'w') as f: json.dump(findings,f,ind
 data={'summary':summary,'findings':findings,'advisor':all_advisor,'resources':all_resources,'costByResource':all_cost,'costByService':all_service}
 js=json.dumps(data).replace('</','<\\/')
 html_doc=f'''<!doctype html><html><head><meta charset="utf-8"><title>Azure Cost Inventory Report</title>
-<style>body{{font-family:Segoe UI,Arial,sans-serif;margin:24px;background:#0f172a;color:#e2e8f0}}a{{color:#93c5fd}}.card{{background:#111827;border:1px solid #334155;border-radius:12px;padding:16px;margin:12px 0}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{border-bottom:1px solid #334155;padding:6px;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#1e293b}}input{{width:100%;padding:10px;background:#020617;color:#e2e8f0;border:1px solid #475569;border-radius:8px}}.sev-High{{color:#fca5a5;font-weight:bold}}.sev-Medium{{color:#fde68a;font-weight:bold}}.money{{color:#86efac}}</style></head><body>
+<style>
+body{{font-family:Segoe UI,Arial,sans-serif;margin:24px;background:#0f172a;color:#e2e8f0}}a{{color:#93c5fd}}
+.card{{background:#111827;border:1px solid #334155;border-radius:12px;padding:16px;margin:12px 0}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
+.metric{{background:#020617;border:1px solid #334155;border-radius:10px;padding:12px}}.metric b{{display:block;font-size:22px;margin-top:4px}}
+table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{border-bottom:1px solid #334155;padding:6px;text-align:left;vertical-align:top}}th{{position:sticky;top:0;background:#1e293b}}
+input,select{{width:100%;padding:10px;background:#020617;color:#e2e8f0;border:1px solid #475569;border-radius:8px;box-sizing:border-box}}
+.controls{{display:grid;grid-template-columns:2fr 1fr;gap:12px}}.sev-High{{color:#fca5a5;font-weight:bold}}.sev-Medium{{color:#fde68a;font-weight:bold}}.sev-Review{{color:#bfdbfe;font-weight:bold}}.money{{color:#86efac}}
+.small{{color:#94a3b8;font-size:12px}}
+</style></head><body>
 <h1>Azure Cost + Utilization Inventory</h1>
 <div class="card"><h2>Executive Summary</h2><p>Period: last {html.escape(days)} days. Subscriptions: {len(subs)}. Resources: {len(all_resources)}. Actual cost captured: <span class="money">{summary['totalCost']}</span>. Findings: {len(findings)}. Advisor cost recommendations: {len(all_advisor)}.</p>
-<p><b>How to use this:</b> Review high-cost resources first, then validate each finding with the workload owner before deleting/stopping. This report is read-only evidence, not an automatic cleanup.</p></div>
-<div class="card"><h2>Search</h2><input id="q" placeholder="Filter tables..." oninput="render()"></div>
+<p><b>How to use this:</b> Review high-cost resources first, filter by subscription when needed, then validate each finding with the workload owner before deleting/stopping. This report is read-only evidence, not an automatic cleanup.</p></div>
+<div class="card"><h2>Filters</h2><div class="controls"><div><label>Search all visible tables</label><input id="q" placeholder="VM name, resource group, service, type, subscription..." oninput="render()"></div><div><label>Subscription</label><select id="subFilter" onchange="render()"></select></div></div><p class="small">The subscription dropdown filters every table and recalculates the visible summary cards.</p></div>
 <div id="app"></div>
 <script>const DATA={js};
 function val(x){{return x===null||x===undefined?'':String(x)}}
-function money(x){{let n=Number(x||0); return isNaN(n)?val(x):n.toFixed(2)}}
-function table(title, rows, cols){{let q=document.getElementById('q').value.toLowerCase(); let r=rows.filter(o=>!q||JSON.stringify(o).toLowerCase().includes(q)); let h='<div class="card"><h2>'+title+' ('+r.length+')</h2><table><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>'; h+=r.slice(0,500).map(o=>'<tr>'+cols.map(c=>'<td class="'+(c=='severity'?'sev-'+val(o[c]):'')+'">'+val(c.toLowerCase().includes('cost')||c=='Cost'?money(o[c]):o[c]).replace(/[&<>]/g,s=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[s]))+'</td>').join('')+'</tr>').join(''); return h+'</tbody></table>'+(r.length>500?'<p>Showing first 500 filtered rows. See CSV for full data.</p>':'')+'</div>'}}
-function render(){{let s=DATA.summary; document.getElementById('app').innerHTML = table('Savings / cleanup findings', DATA.findings, ['severity','finding','recommendation','subscription','resource','type','resourceGroup','lastDaysCost','resourceId']) + table('Advisor cost recommendations', DATA.advisor, ['impact','shortDescription','savings','currency','subscription','resourceId']) + table('Top resources by cost', DATA.costByResource.sort((a,b)=>Number(b.Cost||0)-Number(a.Cost||0)), ['Cost','ResourceId','ResourceType','ServiceName','ResourceGroupName','subscription']) + table('Cost by service', DATA.costByService.sort((a,b)=>Number(b.Cost||0)-Number(a.Cost||0)), ['Cost','ServiceName','subscription']) + table('All resources', DATA.resources, ['cost','subscription','name','type','resourceGroup','location','id']);}}
-render();</script></body></html>'''
+function esc(x){{return val(x).replace(/[&<>]/g,s=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[s]))}}
+function money(x){{let n=Number(x||0); return isNaN(n)?esc(x):n.toFixed(2)}}
+function selectedSub(){{return document.getElementById('subFilter').value}}
+function rowSub(o){{return val(o.subscriptionId)||val(o.subscription)}}
+function matchSub(o,sub){{return !sub || rowSub(o)===sub || val(o.subscription)===sub}}
+function filtered(rows){{let q=document.getElementById('q').value.toLowerCase(); let sub=selectedSub(); return rows.filter(o=>matchSub(o,sub)).filter(o=>!q||JSON.stringify(o).toLowerCase().includes(q))}}
+function table(title, rows, cols){{let r=filtered(rows); let h='<div class="card"><h2>'+esc(title)+' ('+r.length+')</h2><table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'; h+=r.slice(0,500).map(o=>'<tr>'+cols.map(c=>'<td class="'+(c=='severity'?'sev-'+esc(o[c]):'')+'">'+(c.toLowerCase().includes('cost')||c=='Cost'?money(o[c]):esc(o[c]))+'</td>').join('')+'</tr>').join(''); return h+'</tbody></table>'+(r.length>500?'<p class="small">Showing first 500 filtered rows. See CSV for full data.</p>':'')+'</div>'}}
+function sumCost(rows){{return rows.reduce((a,o)=>a+Number(o.Cost||o.cost||o.lastDaysCost||0),0)}}
+function bySubRows(rows, sub){{return rows.filter(o=>matchSub(o,sub))}}
+function summaryCards(){{let sub=selectedSub(); let resources=bySubRows(DATA.resources,sub); let costRows=bySubRows(DATA.costByResource,sub); let findings=bySubRows(DATA.findings,sub); let advisor=bySubRows(DATA.advisor,sub); let name=sub?((DATA.summary.subscriptions.find(s=>s.id===sub)||{{}}).name||sub):'All subscriptions'; return '<div class="card"><h2>Visible Summary - '+esc(name)+'</h2><div class="grid"><div class="metric">Resources<b>'+resources.length+'</b></div><div class="metric">Cost captured<b class="money">'+money(sumCost(costRows))+'</b></div><div class="metric">Cleanup findings<b>'+findings.length+'</b></div><div class="metric">Advisor recommendations<b>'+advisor.length+'</b></div></div></div>'}}
+function subscriptionBreakdown(){{let rows=DATA.summary.subscriptions.map(s=>{{let r=bySubRows(DATA.resources,s.id); let c=bySubRows(DATA.costByResource,s.id); let f=bySubRows(DATA.findings,s.id); let a=bySubRows(DATA.advisor,s.id); return {{subscription:s.name,subscriptionId:s.id,resources:r.length,cost:sumCost(c),findings:f.length,advisor:a.length}}}}); return table('Subscription breakdown', rows, ['subscription','subscriptionId','resources','cost','findings','advisor'])}}
+function initSubFilter(){{let sel=document.getElementById('subFilter'); sel.innerHTML='<option value="">All subscriptions</option>'+DATA.summary.subscriptions.map(s=>'<option value="'+esc(s.id)+'">'+esc(s.name)+' — '+esc(s.id)+'</option>').join('')}}
+function render(){{document.getElementById('app').innerHTML = summaryCards() + subscriptionBreakdown() + table('Savings / cleanup findings', DATA.findings, ['severity','finding','recommendation','subscription','resource','type','resourceGroup','lastDaysCost','resourceId']) + table('Advisor cost recommendations', DATA.advisor, ['impact','shortDescription','savings','currency','subscription','resourceId']) + table('Top resources by cost', DATA.costByResource.slice().sort((a,b)=>Number(b.Cost||0)-Number(a.Cost||0)), ['Cost','ResourceId','ResourceType','ServiceName','ResourceGroupName','subscription']) + table('Cost by service', DATA.costByService.slice().sort((a,b)=>Number(b.Cost||0)-Number(a.Cost||0)), ['Cost','ServiceName','subscription']) + table('All resources', DATA.resources, ['cost','subscription','name','type','resourceGroup','location','id']);}}
+initSubFilter(); render();</script></body></html>'''
 with open(os.path.join(root,'index.html'),'w') as f: f.write(html_doc)
 PY
 }
@@ -363,3 +382,4 @@ Next step:
 2. Send me summary.json, cost-savings-findings.csv, advisor-cost-recommendations.csv, and all-cost-by-resource.csv if you want me to interpret the results and produce a prioritized cleanup plan.
 3. Do not delete anything solely from this report; validate owner, backups, dependencies, and business criticality first.
 EOF
+
